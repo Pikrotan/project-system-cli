@@ -1,18 +1,13 @@
 from pathlib import Path
 from collections import defaultdict, deque
-from .frontmatter import read_object
 from .utils import ID_RE
+from .object_loader import load_object_layer
 
 RELATION_KEYS={'depends_on','supersedes','requirements','flows','screens','blocks','affects','related','relationships','caused_by'}
 SINGLE_RELATION_KEYS={'introduced_by','deprecated_by','resolved_by','feature','metric'}
 
 def load_objects(root):
-    out={}
-    for p in Path(root).glob('knowledge/**/*.md'):
-        try: data,_=read_object(p)
-        except Exception: continue
-        if data.get('id'): out[data['id']]={'data':data,'path':p}
-    return out
+    return load_object_layer(root).objects
 
 def extract_refs(data):
     refs=[]

@@ -2,8 +2,9 @@ from pathlib import Path
 from datetime import date
 from .ids import make_id
 from .utils import distribution_root
+from .object_loader import TYPE_DIRECTORIES
 
-DIRS={'decision':'decisions','requirement':'requirements','feature':'features','question':'questions','risk':'risks','experiment':'experiments','screen':'screens','flow':'flows','entity':'entities','metric':'metrics','design_change':'design_changes','debt':'debts'}
+DIRS = TYPE_DIRECTORIES
 
 def create_object(root,obj_type,title,domain='general',owner='owner'):
     tpl=(distribution_root()/'object_templates'/f'{obj_type}.md').read_text(encoding='utf-8')

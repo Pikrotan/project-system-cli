@@ -1,7 +1,7 @@
 # Distribution Manifest
 
 - Template version: 1.1.0 Stable
-- CLI version: 0.1.2
+- CLI version: 0.1.3
 - Schema version: 1
 - Narrative templates: 34
 - Atomic object types: 12
@@ -24,7 +24,7 @@ Local validation proves schema/graph/filesystem invariants only. It cannot prove
 
 ## Stable verification baseline
 
-- Unit + adversarial regression suite: **26 passed, 0 failed**.
+- Unit + adversarial regression suite: **39 passed, 1 platform-permission skip, 0 failed**.
 - Source-tree end-to-end flow: **passed**.
 - Wheel build: **passed**; packaged assets verified inside wheel.
 - Installed console entry point outside source checkout: `project --version → init → validate`: **passed**.

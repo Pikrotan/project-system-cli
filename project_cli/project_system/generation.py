@@ -1,12 +1,21 @@
 from pathlib import Path
 import json
-from .graph import build_graph, load_objects
+from .graph import build_graph
 from .validation import validate, counts
+
+
+class GenerationBlockedError(RuntimeError):
+    pass
 
 TYPE_DIRS=['decisions','requirements','features','questions','risks','experiments','screens','flows','entities','metrics','design_changes','debts']
 
 def generate(root):
-    root=Path(root); base=root/'.generated'; (base/'indexes').mkdir(parents=True,exist_ok=True); (base/'graphs').mkdir(parents=True,exist_ok=True); (base/'reports').mkdir(parents=True,exist_ok=True)
+    root=Path(root)
+    issues=validate(root)
+    fatal=[issue for issue in issues if issue[0] in {'BLOCKING','ERROR'}]
+    if fatal:
+        raise GenerationBlockedError(f'generation blocked by validation: {len(fatal)} blocking/error issue(s)')
+    base=root/'.generated'; (base/'indexes').mkdir(parents=True,exist_ok=True); (base/'graphs').mkdir(parents=True,exist_ok=True); (base/'reports').mkdir(parents=True,exist_ok=True)
     objs,edges,reverse=build_graph(root)
     bytype={}
     for oid,item in objs.items(): bytype.setdefault(item['data'].get('type','unknown'),[]).append(item['data'])
@@ -23,7 +32,7 @@ def generate(root):
     graph={'nodes':[{'id':oid,'type':v['data'].get('type'),'status':v['data'].get('status')} for oid,v in sorted(objs.items())],'edges':edges,'reverse':dict(reverse)}
     (base/'graphs'/'DEPENDENCY_GRAPH.json').write_text(json.dumps(graph,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
     (base/'graphs'/'TRACEABILITY.json').write_text(json.dumps({'edges':edges},indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
-    issues=validate(root); cc=counts(issues)
+    cc=counts(issues)
     lines=['# Project Health','', '> Generated. No scalar score by default.','',*(f'- {k}: {cc[k]}' for k in ['BLOCKING','ERROR','WARNING','INFO']),'','## Object Counts','']
     for t,items in sorted(bytype.items()): lines.append(f'- {t}: {len(items)}')
     (base/'reports'/'PROJECT_HEALTH.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')

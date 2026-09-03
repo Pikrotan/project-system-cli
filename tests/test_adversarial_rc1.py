@@ -42,7 +42,13 @@ def test_module_rejects_symlink_target(tmp_path,monkeypatch):
     root=init_project('Demo',tmp_path/'demo')
     dist=_fake_dist(tmp_path,'evil',[{'template':'payload.txt','target':'docs/evil.md'}])
     monkeypatch.setattr(modules,'distribution_root',lambda:dist)
-    outside=tmp_path/'outside.txt'; link=root/'docs/evil.md'; link.symlink_to(outside)
+    outside=tmp_path/'outside.txt'; link=root/'docs/evil.md'
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        if getattr(exc,'winerror',None)==1314:
+            pytest.skip('Windows symlink privilege is not available')
+        raise
     with pytest.raises(RuntimeError,match='symlink'):
         modules.enable(root,'evil')
     assert not outside.exists()

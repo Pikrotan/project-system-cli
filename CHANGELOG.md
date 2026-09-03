@@ -1,5 +1,14 @@
 # Changelog
 
+## CLI 0.1.3 — 2026-09-04
+- Establish `.md` with YAML frontmatter and Markdown body as the canonical atomic object format through one shared object loader.
+- Use the shared loader for validation, generation, graph/context operations, task and sync targeting, and ID collision detection.
+- Reject unsupported atomic-like `.yaml` and `.yml` files and non-empty knowledge layers with zero recognized objects.
+- Report recognized object counts by type during validation.
+- Block generation before writing derived output when validation contains BLOCKING or ERROR issues.
+- Standardize collision-resistant IDs as `<TYPE>-YYYYMMDD-<8 lowercase hex chars>` across runtime generation, reference matching, and all object schemas.
+- Add regression coverage for object discovery, unsupported formats, empty-recognition protection, generation gating, targeting, counts, and ID collisions.
+
 ## v1.1.0 Stable — 2026-08-31
 - Promoted RC2 to Stable after three adversarial review rounds and local re-verification.
 - No runtime logic changes from RC2; Stable freezes the verified RC2 implementation.

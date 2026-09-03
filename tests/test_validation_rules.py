@@ -15,7 +15,7 @@ def test_active_decision_requires_approval(tmp_path):
 def test_broken_reference_is_error(tmp_path):
     root=init_project('Demo',tmp_path/'demo')
     p,_=create_object(root,'feature','F','product','owner')
-    d,b=read_object(p); d['depends_on']=['DEC-20260831-ABCDEFGH']; write_object(p,d,b)
+    d,b=read_object(p); d['depends_on']=['DEC-20260831-deadbeef']; write_object(p,d,b)
     issues=validate(root)
     assert any(x[0]=='ERROR' and 'broken reference' in x[2] for x in issues)
 

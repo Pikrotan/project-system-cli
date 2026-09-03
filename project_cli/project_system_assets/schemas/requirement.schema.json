@@ -20,7 +20,7 @@
     },
     "id": {
       "type": "string",
-      "pattern": "^REQ-[0-9]{8}-[A-Z2-9]{8}$"
+      "pattern": "^REQ-[0-9]{8}-[0-9a-f]{8}$"
     },
     "type": {
       "const": "requirement"

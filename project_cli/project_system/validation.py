@@ -1,10 +1,10 @@
 from pathlib import Path
 from collections import Counter
 from .utils import load_yaml, ID_RE
-from .frontmatter import read_object
 from .schemas import validate_object_schema, validate_project_schema
-from .graph import load_objects, extract_refs, dependency_cycles
+from .graph import extract_refs, dependency_cycles
 from .objects import DIRS
+from .object_loader import load_object_layer
 
 BAD_DEP_STATUSES={'deprecated','removed','rejected','superseded','cancelled'}
 
@@ -12,12 +12,15 @@ def validate(root):
     issues=[]
     cfg=load_yaml(Path(root)/'project.yaml')
     for m in validate_project_schema(cfg): issues.append(('BLOCKING','project.yaml',m))
-    objects=[]
-    for p in Path(root).glob('knowledge/**/*.md'):
-        try: data,_=read_object(p)
-        except Exception as e:
-            issues.append(('ERROR',str(p.relative_to(root)),str(e))); continue
-        objects.append((p,data))
+    layer=load_object_layer(root)
+    for p in layer.unsupported_paths:
+        issues.append(('ERROR',str(p.relative_to(root)),'unsupported atomic object format; use .md with YAML frontmatter and Markdown body'))
+    for failure in layer.errors:
+        issues.append(('ERROR',str(failure.path.relative_to(root)),str(failure.error)))
+    if layer.has_content and not layer.objects:
+        issues.append(('ERROR','knowledge','knowledge contains files but no atomic objects were recognized'))
+    objects=[(record.path,record.data) for record in layer.records]
+    for p,data in objects:
         expected_dir=DIRS.get(data.get('type'))
         if expected_dir and p.parent.name!=expected_dir:
             issues.append(('ERROR',str(p.relative_to(root)),f'object type {data.get("type")} must live under knowledge/{expected_dir}/'))
@@ -26,7 +29,7 @@ def validate(root):
     counts=Counter(d.get('id') for _,d in objects if d.get('id'))
     for oid,n in counts.items():
         if n>1: issues.append(('ERROR',oid,'duplicate ID'))
-    objmap=load_objects(root)
+    objmap=layer.objects
     for p,d in objects:
         for ref in extract_refs(d):
             if ref not in objmap: issues.append(('ERROR',d.get('id',str(p)) ,f'broken reference: {ref}'))

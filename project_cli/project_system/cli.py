@@ -1,10 +1,12 @@
 import argparse, sys, json
 from pathlib import Path
+from . import __version__
 from .utils import find_root
 from .init_project import init_project
 from .objects import create_object, DIRS
 from .validation import validate, counts
-from .generation import generate
+from .generation import generate, GenerationBlockedError
+from .object_loader import load_object_layer
 from .context import build_context
 from .impact import impact
 from .health import health
@@ -18,9 +20,15 @@ def print_issues(issues):
     for sev,loc,msg in issues: print(f'{sev:8} {loc}: {msg}')
     c=counts(issues); print(f"\nBLOCKING {c['BLOCKING']} | ERROR {c['ERROR']} | WARNING {c['WARNING']} | INFO {c['INFO']}")
 
+def print_object_counts(root):
+    by_type=load_object_layer(root).counts_by_type()
+    print(f"\nObjects: {sum(by_type.values())}")
+    for object_type,count in sorted(by_type.items()):
+        print(f'- {object_type}: {count}')
+
 def main(argv=None):
     p=argparse.ArgumentParser(prog='project',description='Project Template v1.1 CLI')
-    p.add_argument('--version',action='version',version='project-system-cli 0.1.2')
+    p.add_argument('--version',action='version',version=f'project-system-cli {__version__}')
     sp=p.add_subparsers(dest='cmd',required=True)
     q=sp.add_parser('init'); q.add_argument('name'); q.add_argument('--path',default=None); q.add_argument('--type',default='other',choices=['mobile_app','web_app','desktop_app','game','saas','platform','backend_service','library','prototype','other']); q.add_argument('--governance',default='solo',choices=['solo','small_team','strict_team']); q.add_argument('--full-docs',action='store_true')
     q=sp.add_parser('new'); q.add_argument('type',choices=TYPES); q.add_argument('--title',required=True); q.add_argument('--domain',default='general'); q.add_argument('--owner',default='owner')
@@ -43,8 +51,11 @@ def main(argv=None):
     if args.cmd=='new':
         path,oid=create_object(root,args.type,args.title,args.domain,args.owner); print(f'{oid}\n{path.relative_to(root)}')
     elif args.cmd=='validate':
-        issues=validate(root); print_issues(issues); sys.exit(2 if any(x[0] in {'BLOCKING','ERROR'} for x in issues) else 0)
-    elif args.cmd=='generate': print(generate(root))
+        issues=validate(root); print_issues(issues); print_object_counts(root); sys.exit(2 if any(x[0] in {'BLOCKING','ERROR'} for x in issues) else 0)
+    elif args.cmd=='generate':
+        try: print(generate(root))
+        except GenerationBlockedError as exc:
+            print(str(exc),file=sys.stderr); sys.exit(2)
     elif args.cmd=='context':
         out,_=build_context(root,args.target,args.budget,args.mode); print(out)
     elif args.cmd=='impact': print(json.dumps(impact(root,args.target),indent=2,ensure_ascii=False))

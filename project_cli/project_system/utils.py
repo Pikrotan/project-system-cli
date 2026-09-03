@@ -2,7 +2,7 @@ from pathlib import Path
 import os, re, tempfile, yaml
 
 ID_SUFFIX_LENGTH = 8
-ID_RE = re.compile(r"^(?:DEC|REQ|FEAT|Q|RISK|EXP|SCR|FLOW|ENT|MET|DES|DEBT)-\d{8}-[A-Z2-9]{8}$")
+ID_RE = re.compile(r"^(?:DEC|REQ|FEAT|Q|RISK|EXP|SCR|FLOW|ENT|MET|DES|DEBT)-\d{8}-[0-9a-f]{8}$")
 
 def find_root(start=None):
     p=Path(start or Path.cwd()).resolve()

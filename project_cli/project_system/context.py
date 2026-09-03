@@ -1,7 +1,8 @@
 from pathlib import Path
 import json, re
 from .utils import load_yaml
-from .graph import load_objects, related_bfs
+from .graph import related_bfs
+from .object_loader import load_object_layer
 from .impact import impact
 
 CURRENT_STATUSES={'decision':{'active'},'requirement':{'active'},'feature':{'idea','planned','in_progress','shipped'},'question':{'open','needs_data','ready_for_decision','blocked'},'risk':{'open','mitigated','accepted'},'experiment':{'planned','running','completed'},'screen':{'draft','design','approved','implemented'},'flow':{'draft','proposed','approved','implemented'},'entity':{'proposed','active'},'metric':{'proposed','active'},'design_change':{'new','review','approved'},'debt':{'open','acknowledged','in_progress'}}
@@ -25,7 +26,7 @@ def _try_add(parts,label,path,maxchars,used,required=False):
 def build_context(root,target='project',budget='medium',mode='review',allowed_write_set=None,kind='context'):
     root=Path(root); pol=load_yaml(root/'.project/policies/retrieval.yaml')
     tokens=int(pol.get('context_budgets',{}).get(budget,20000)); maxchars=tokens*4
-    objs=load_objects(root)
+    objs=load_object_layer(root).objects
     parts=[f'# {kind.title()} Pack\n\nTarget: `{target}`\n\nMode: `{mode}`\n\nBudget: `{budget}`\n']
     used=len(parts[0]); included_docs=[]; included_objs=[]; omitted_docs=[]; omitted_objs=[]
     special=target in {'project','onboarding','bootstrap'}

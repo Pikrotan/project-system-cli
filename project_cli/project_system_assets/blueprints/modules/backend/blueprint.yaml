@@ -1,0 +1,10 @@
+id: backend
+name: Backend
+version: '1.0'
+category: platform
+requires: []
+conflicts_with: []
+creates:
+- template: docs/technical/BACKEND_PLATFORM.md
+  target: docs/technical/BACKEND_PLATFORM.md
+default_status: inactive

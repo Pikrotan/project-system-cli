@@ -1,0 +1,10 @@
+id: web
+name: Web
+version: '1.0'
+category: platform
+requires: []
+conflicts_with: []
+creates:
+- template: docs/technical/WEB_PLATFORM.md
+  target: docs/technical/WEB_PLATFORM.md
+default_status: inactive

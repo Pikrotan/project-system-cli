@@ -1,0 +1,25 @@
+version: 1
+exclude_by_default:
+  paths:
+    - history/**
+    - .generated/**
+  statuses:
+    - superseded
+    - rejected
+    - deprecated
+    - removed
+    - resolved
+    - cancelled
+historical_marker: "HISTORICAL CONTEXT — do not treat as current state."
+context_budgets:
+  small: 8000
+  medium: 20000
+  large: 50000
+core_docs:
+  - AGENTS.md
+  - PROJECT_RULES.md
+  - docs/00_CURRENT_STATE.md
+  - docs/01_VISION.md
+  - docs/02_SCOPE.md
+  - docs/03_PRODUCT.md
+  - docs/04_ARCHITECTURE.md

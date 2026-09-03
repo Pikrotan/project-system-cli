@@ -1,0 +1,11 @@
+id: offline
+name: Offline
+version: '1.0'
+category: capability
+requires:
+- mobile
+conflicts_with: []
+creates:
+- template: docs/technical/OFFLINE_AND_SYNC.md
+  target: docs/technical/OFFLINE_AND_SYNC.md
+default_status: inactive

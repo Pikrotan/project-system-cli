@@ -1,0 +1,25 @@
+version: 1
+change_classes:
+  A:
+    description: local implementation change
+    human_review: optional
+  B:
+    description: observable behavior change
+    human_review: policy_based
+  C:
+    description: product or architecture decision
+    human_review: required
+  D:
+    description: critical security/privacy/payments/destructive change
+    human_review: required
+    second_review_recommended: true
+modes:
+  solo:
+    direct_main_push: allowed
+    approval_enforcement: procedural
+  small_team:
+    direct_main_push: discouraged
+    approval_enforcement: pull_request_for_C_D
+  strict_team:
+    direct_main_push: forbidden
+    approval_enforcement: protected_branch_and_required_human_review

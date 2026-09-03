@@ -1,0 +1,13 @@
+id: payments
+name: Payments
+version: '1.0'
+category: capability
+requires:
+- backend
+conflicts_with: []
+creates:
+- template: docs/business/PAYMENTS_AND_BILLING.md
+  target: docs/business/PAYMENTS_AND_BILLING.md
+- template: docs/technical/PAYMENT_SECURITY.md
+  target: docs/technical/PAYMENT_SECURITY.md
+default_status: inactive

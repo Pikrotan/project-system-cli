@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project configuration",
+  "type": "object",
+  "required": [
+    "project",
+    "governance_mode",
+    "tooling",
+    "modules"
+  ],
+  "properties": {
+    "project": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "template_version",
+        "type"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "template_version": {
+          "const": "1.1"
+        },
+        "type": {
+          "enum": [
+            "mobile_app",
+            "web_app",
+            "desktop_app",
+            "game",
+            "saas",
+            "platform",
+            "backend_service",
+            "library",
+            "prototype",
+            "other"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "governance_mode": {
+      "enum": [
+        "solo",
+        "small_team",
+        "strict_team"
+      ]
+    },
+    "tooling": {
+      "type": "object",
+      "required": [
+        "project_cli",
+        "schema_version"
+      ],
+      "properties": {
+        "project_cli": {
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "modules": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "blueprint_version": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "external_systems": {
+      "type": "object"
+    },
+    "ai": {
+      "type": "object"
+    },
+    "validation": {
+      "type": "object"
+    },
+    "drift_policy": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

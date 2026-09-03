@@ -1,0 +1,6 @@
+# Replace placeholders with real GitHub handles.
+/knowledge/decisions/ @project-owner
+/knowledge/requirements/ @project-owner
+/docs/04_ARCHITECTURE.md @project-owner
+/docs/business/ @project-owner
+/docs/design/ @designer @project-owner

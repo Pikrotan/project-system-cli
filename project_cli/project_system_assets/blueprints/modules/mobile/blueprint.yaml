@@ -1,0 +1,10 @@
+id: mobile
+name: Mobile
+version: '1.0'
+category: platform
+requires: []
+conflicts_with: []
+creates:
+- template: docs/technical/MOBILE_PLATFORM.md
+  target: docs/technical/MOBILE_PLATFORM.md
+default_status: inactive

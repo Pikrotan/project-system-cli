@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Common knowledge object",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "type",
+    "title",
+    "domain",
+    "status",
+    "owner",
+    "created_at",
+    "source",
+    "depends_on"
+  ],
+  "additionalProperties": true
+}

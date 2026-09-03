@@ -1,0 +1,10 @@
+id: analytics
+name: Analytics
+version: '1.0'
+category: capability
+requires: []
+conflicts_with: []
+creates:
+- template: docs/technical/ANALYTICS_IMPLEMENTATION.md
+  target: docs/technical/ANALYTICS_IMPLEMENTATION.md
+default_status: inactive

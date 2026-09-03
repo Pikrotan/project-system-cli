@@ -1,0 +1,12 @@
+id: ai
+name: Ai
+version: '1.0'
+category: capability
+requires: []
+conflicts_with: []
+creates:
+- template: docs/ai/AI_SPECIFICATION.md
+  target: docs/ai/AI_SPECIFICATION.md
+- template: docs/ai/PROMPTS_AND_EVAL.md
+  target: docs/ai/PROMPTS_AND_EVAL.md
+default_status: inactive

@@ -1,0 +1,11 @@
+id: realtime
+name: Realtime
+version: '1.0'
+category: capability
+requires:
+- backend
+conflicts_with: []
+creates:
+- template: docs/technical/REALTIME.md
+  target: docs/technical/REALTIME.md
+default_status: inactive

@@ -1,0 +1,10 @@
+id: notifications
+name: Notifications
+version: '1.0'
+category: capability
+requires: []
+conflicts_with: []
+creates:
+- template: docs/product/NOTIFICATIONS_RULES.md
+  target: docs/product/NOTIFICATIONS_RULES.md
+default_status: inactive

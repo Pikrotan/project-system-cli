@@ -1,0 +1,11 @@
+id: moderation
+name: Moderation
+version: '1.0'
+category: capability
+requires:
+- backend
+conflicts_with: []
+creates:
+- template: docs/product/MODERATION.md
+  target: docs/product/MODERATION.md
+default_status: inactive

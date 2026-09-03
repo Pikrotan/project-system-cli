@@ -1,0 +1,11 @@
+id: flutter
+name: Flutter
+version: '1.0'
+category: platform
+requires:
+- mobile
+conflicts_with: []
+creates:
+- template: docs/technical/FLUTTER_CONVENTIONS.md
+  target: docs/technical/FLUTTER_CONVENTIONS.md
+default_status: inactive

@@ -1,0 +1,10 @@
+id: gamification
+name: Gamification
+version: '1.0'
+category: capability
+requires: []
+conflicts_with: []
+creates:
+- template: docs/product/GAMIFICATION.md
+  target: docs/product/GAMIFICATION.md
+default_status: inactive

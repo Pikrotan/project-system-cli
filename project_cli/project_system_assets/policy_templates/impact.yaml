@@ -1,0 +1,43 @@
+version: 1
+rules:
+  - id: auth-security
+    when:
+      domain: auth
+    check_docs:
+      - docs/technical/SECURITY_AND_PRIVACY.md
+      - docs/technical/API_AND_INTEGRATIONS.md
+  - id: security-security
+    when:
+      domain: security
+    check_docs:
+      - docs/technical/SECURITY_AND_PRIVACY.md
+  - id: pricing-business
+    when:
+      domain: pricing
+    check_docs:
+      - docs/business/MONETIZATION_AND_PRICING.md
+      - docs/business/BUSINESS_MODEL.md
+  - id: metric-growth
+    when:
+      type: metric
+    check_docs:
+      - docs/business/METRICS_AND_GROWTH.md
+  - id: screen-design
+    when:
+      type: screen
+    check_docs:
+      - docs/design/DESIGN_OVERVIEW.md
+      - docs/design/UX_PATTERNS.md
+  - id: flow-product-design
+    when:
+      type: flow
+    check_docs:
+      - docs/product/USER_FLOWS.md
+      - docs/design/UX_PATTERNS.md
+  - id: entity-data
+    when:
+      type: entity
+    check_docs:
+      - docs/03_PRODUCT.md
+      - docs/04_ARCHITECTURE.md
+      - docs/technical/DATA_AND_STORAGE.md

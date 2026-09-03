@@ -3,7 +3,10 @@ from pathlib import Path
 import pytest
 
 from project_system.cli import main
+from project_system.context import build_context
 from project_system.generation import generate, GenerationBlockedError
+from project_system.graph import build_graph
+from project_system.frontmatter import read_object, write_object
 from project_system.init_project import init_project
 from project_system.object_loader import load_object_layer
 from project_system.objects import create_object
@@ -14,6 +17,12 @@ import project_system.ids as ids
 
 def _fatal(issues):
     return [issue for issue in issues if issue[0] in {'BLOCKING', 'ERROR'}]
+
+
+def _with_slug(path, slug='search'):
+    target = path.with_name(f'{path.stem}-{slug}.md')
+    path.rename(target)
+    return target
 
 
 @pytest.mark.parametrize('suffix', ['.yaml', '.yml'])
@@ -62,12 +71,88 @@ def test_loader_is_shared_source_of_object_counts(tmp_path):
     assert layer.counts_by_type() == {'decision': 1, 'feature': 1}
 
 
+def test_id_only_filename_is_valid(tmp_path):
+    root = init_project('Demo', tmp_path / 'demo')
+    path, object_id = create_object(root, 'feature', 'Search', 'product', 'owner')
+
+    assert path.name == f'{object_id}.md'
+    assert not _fatal(validate(root))
+
+
+def test_id_slug_filename_is_valid_and_transparent_to_consumers(tmp_path):
+    root = init_project('Demo', tmp_path / 'demo')
+    path, object_id = create_object(root, 'feature', 'Search', 'product', 'owner')
+    path = _with_slug(path)
+
+    layer = load_object_layer(root)
+    graph, _, _ = build_graph(root)
+    _, context_manifest = build_context(root, object_id, 'small')
+    _, task_manifest = task(root, object_id, 'implement', 'small')
+    generated = generate(root)
+
+    assert not _fatal(validate(root))
+    assert layer.objects[object_id]['path'] == path
+    assert object_id in graph
+    assert object_id in context_manifest['included_objects']
+    assert str(path.relative_to(root)) in task_manifest['allowed_write_set']
+    assert object_id in (generated / 'indexes' / 'FEATURES.md').read_text(encoding='utf-8')
+    assert str(path.relative_to(root)) in (generated / 'indexes' / 'PROJECT_MAP.md').read_text(encoding='utf-8')
+
+
+def test_filename_id_prefix_must_match_internal_id(tmp_path):
+    root = init_project('Demo', tmp_path / 'demo')
+    path, object_id = create_object(root, 'feature', 'Search', 'product', 'owner')
+    data, body = read_object(path)
+    data['id'] = object_id[:-8] + ('cafebabe' if not object_id.endswith('cafebabe') else 'deadbeef')
+    write_object(path, data, body)
+
+    issues = validate(root)
+
+    assert any(
+        issue[0] == 'ERROR'
+        and issue[1] == str(path.relative_to(root))
+        and 'filename ID prefix does not match object id' in issue[2]
+        for issue in issues
+    )
+
+
+def test_malformed_object_filename_is_rejected(tmp_path):
+    root = init_project('Demo', tmp_path / 'demo')
+    path, _ = create_object(root, 'feature', 'Search', 'product', 'owner')
+    path = path.rename(path.with_name('search.md'))
+
+    issues = validate(root)
+
+    assert any(
+        issue[0] == 'ERROR'
+        and issue[1] == str(path.relative_to(root))
+        and 'filename must be ID.md or ID-slug.md' in issue[2]
+        for issue in issues
+    )
+
+
+def test_duplicate_internal_id_with_different_slugs_is_rejected(tmp_path):
+    root = init_project('Demo', tmp_path / 'demo')
+    path, object_id = create_object(root, 'feature', 'Search', 'product', 'owner')
+    first = _with_slug(path, 'first')
+    second = first.with_name(f'{object_id}-second.md')
+    second.write_text(first.read_text(encoding='utf-8'), encoding='utf-8')
+
+    layer = load_object_layer(root)
+    issues = validate(root)
+
+    assert len(layer.records) == 2
+    assert list(layer.objects) == [object_id]
+    assert any(issue == ('ERROR', object_id, 'duplicate ID') for issue in issues)
+
+
 def test_id_collision_detection_uses_loaded_markdown_objects(tmp_path, monkeypatch):
     root = init_project('Demo', tmp_path / 'demo')
     suffixes = iter(['deadbeef', 'deadbeef', 'cafebabe'])
     monkeypatch.setattr(ids.secrets, 'token_hex', lambda _: next(suffixes))
 
-    _, first_id = create_object(root, 'feature', 'First', 'product', 'owner')
+    first_path, first_id = create_object(root, 'feature', 'First', 'product', 'owner')
+    _with_slug(first_path, 'first')
     _, second_id = create_object(root, 'feature', 'Second', 'product', 'owner')
 
     assert first_id.endswith('-deadbeef')

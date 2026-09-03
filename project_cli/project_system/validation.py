@@ -20,12 +20,16 @@ def validate(root):
     if layer.has_content and not layer.objects:
         issues.append(('ERROR','knowledge','knowledge contains files but no atomic objects were recognized'))
     objects=[(record.path,record.data) for record in layer.records]
-    for p,data in objects:
+    for record in layer.records:
+        p,data=record.path,record.data
         expected_dir=DIRS.get(data.get('type'))
         if expected_dir and p.parent.name!=expected_dir:
             issues.append(('ERROR',str(p.relative_to(root)),f'object type {data.get("type")} must live under knowledge/{expected_dir}/'))
         for m in validate_object_schema(data): issues.append(('ERROR',str(p.relative_to(root)),m))
-        if data.get('id') and p.stem!=data['id']: issues.append(('ERROR',str(p.relative_to(root)),'filename does not match object id'))
+        if record.filename_id is None:
+            issues.append(('ERROR',str(p.relative_to(root)),'filename must be ID.md or ID-slug.md with a valid object ID prefix'))
+        elif data.get('id') and record.filename_id!=data['id']:
+            issues.append(('ERROR',str(p.relative_to(root)),'filename ID prefix does not match object id'))
     counts=Counter(d.get('id') for _,d in objects if d.get('id'))
     for oid,n in counts.items():
         if n>1: issues.append(('ERROR',oid,'duplicate ID'))

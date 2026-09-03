@@ -10,7 +10,7 @@ def make_id(obj_type, root=None, today=None):
     d=(today or date.today()).strftime('%Y%m%d')
     existing=set()
     if root:
-        existing={path.stem for path in load_object_layer(root).paths}
+        existing=set(load_object_layer(root).objects)
     for _ in range(100):
         suffix=secrets.token_hex(ID_SUFFIX_LENGTH // 2)
         value=f'{prefix}-{d}-{suffix}'

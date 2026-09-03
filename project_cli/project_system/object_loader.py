@@ -1,8 +1,10 @@
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from .frontmatter import read_object
+from .utils import ID_RE
 
 
 TYPE_DIRECTORIES = {
@@ -20,6 +22,10 @@ TYPE_DIRECTORIES = {
     'debt': 'debts',
 }
 ATOMIC_DIRECTORIES = frozenset(TYPE_DIRECTORIES.values())
+OBJECT_FILENAME_RE = re.compile(
+    rf'^(?P<id>{ID_RE.pattern.removeprefix("^").removesuffix("$")})'
+    r'(?:-(?P<slug>[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?))?$'
+)
 
 
 @dataclass(frozen=True)
@@ -27,6 +33,7 @@ class ObjectRecord:
     path: Path
     data: dict
     body: str
+    filename_id: str | None
 
 
 @dataclass(frozen=True)
@@ -60,6 +67,12 @@ def _is_atomic_directory_file(path, knowledge):
     return bool(relative.parts) and relative.parts[0] in ATOMIC_DIRECTORIES
 
 
+def object_id_from_filename(path):
+    """Return the identity prefix from an ID.md or ID-slug.md filename."""
+    match = OBJECT_FILENAME_RE.fullmatch(Path(path).stem)
+    return match.group('id') if match else None
+
+
 def load_object_layer(root):
     """Load the canonical atomic knowledge layer from Markdown objects.
 
@@ -90,7 +103,7 @@ def load_object_layer(root):
         except Exception as exc:
             errors.append(ObjectLoadError(path, exc))
             continue
-        record = ObjectRecord(path, data, body)
+        record = ObjectRecord(path, data, body, object_id_from_filename(path))
         records.append(record)
         object_id = data.get('id')
         if object_id and object_id not in objects:

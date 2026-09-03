@@ -1,5 +1,11 @@
 # Changelog
 
+## CLI 0.1.4 — 2026-09-04
+- Accept canonical atomic object filenames in both `ID.md` and `ID-slug.md` forms.
+- Validate that the filename ID prefix is well-formed and matches the object's internal `id`, while keeping the optional slug outside object identity and lookup.
+- Keep context, task/sync targeting, graph generation, derived indexes, and ID collision detection keyed by internal ID regardless of filename slug.
+- Add regression coverage for both valid filename forms, mismatched and malformed filenames, duplicate internal IDs under different slugs, and slug-transparent object consumers.
+
 ## CLI 0.1.3 — 2026-09-04
 - Establish `.md` with YAML frontmatter and Markdown body as the canonical atomic object format through one shared object loader.
 - Use the shared loader for validation, generation, graph/context operations, task and sync targeting, and ID collision detection.

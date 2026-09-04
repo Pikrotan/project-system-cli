@@ -21,7 +21,7 @@ def init_project(name,path,project_type='other',governance='solo',full_docs=Fals
         rel=s.relative_to(dist/'narrative_templates'); d=root/'docs'/rel; d.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(s,d)
     for d in ['decisions','requirements','features','questions','risks','experiments','screens','flows','entities','metrics','design_changes','debts']:
         p=root/'knowledge'/d; p.mkdir(parents=True,exist_ok=True); (p/'.gitkeep').write_text('',encoding='utf-8')
-    for d in ['general','design','research','feedback']:
+    for d in ['general','design','research','feedback','sync']:
         p=root/'inbox'/d; p.mkdir(parents=True,exist_ok=True); (p/'.gitkeep').write_text('',encoding='utf-8')
     for d in ['retrospectives','imported','external_research','migrations','legacy']:
         p=root/'history'/d; p.mkdir(parents=True,exist_ok=True); (p/'.gitkeep').write_text('',encoding='utf-8')

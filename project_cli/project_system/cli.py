@@ -12,6 +12,7 @@ from .impact import impact
 from .health import health
 from .modules import catalog, enable, disable
 from .tasking import task, bootstrap, prepare_pr
+from .sync_planning import plan_sync, SyncPlanError
 
 TYPES=list(DIRS)
 
@@ -32,7 +33,7 @@ def main(argv=None):
     sp=p.add_subparsers(dest='cmd',required=True)
     q=sp.add_parser('init'); q.add_argument('name'); q.add_argument('--path',default=None); q.add_argument('--type',default='other',choices=['mobile_app','web_app','desktop_app','game','saas','platform','backend_service','library','prototype','other']); q.add_argument('--governance',default='solo',choices=['solo','small_team','strict_team']); q.add_argument('--full-docs',action='store_true')
     q=sp.add_parser('new'); q.add_argument('type',choices=TYPES); q.add_argument('--title',required=True); q.add_argument('--domain',default='general'); q.add_argument('--owner',default='owner')
-    q=sp.add_parser('validate'); q.add_argument('--changed',action='store_true',help='Accepted for workflow compatibility; v0.1 validates whole knowledge graph.')
+    q=sp.add_parser('validate'); q.add_argument('--changed',action='store_true',help='Accepted for workflow compatibility; validates the whole knowledge graph.')
     sp.add_parser('generate')
     q=sp.add_parser('context'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='review')
     q=sp.add_parser('impact'); q.add_argument('target')
@@ -41,7 +42,7 @@ def main(argv=None):
     q=sp.add_parser('enable'); q.add_argument('module')
     q=sp.add_parser('disable'); q.add_argument('module')
     q=sp.add_parser('task'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='implement')
-    q=sp.add_parser('sync'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium')
+    q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, or "plan"'); q.add_argument('pack',nargs='?'); q.add_argument('--budget',choices=['small','medium','large'],default='medium')
     q=sp.add_parser('bootstrap'); q.add_argument('--budget',choices=['small','medium','large'],default='medium')
     sp.add_parser('prepare-pr')
     args=p.parse_args(argv)
@@ -71,7 +72,14 @@ def main(argv=None):
     elif args.cmd=='task':
         out,_=task(root,args.target,args.mode,args.budget,False); print(out)
     elif args.cmd=='sync':
-        out,_=task(root,args.target,'sync',args.budget,True); print(out)
+        if args.target=='plan':
+            if not args.pack: p.error('project sync plan requires <pack>')
+            try: out,_=plan_sync(root,args.pack); print(out)
+            except SyncPlanError as exc:
+                print(f'sync plan failed: {exc}',file=sys.stderr); sys.exit(2)
+        else:
+            if args.pack: p.error('legacy project sync accepts one object ID')
+            out,_=task(root,args.target,'sync',args.budget,True); print(out)
     elif args.cmd=='bootstrap':
         out,_=bootstrap(root,args.budget); print(out)
     elif args.cmd=='prepare-pr': print(prepare_pr(root))

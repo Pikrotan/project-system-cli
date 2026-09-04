@@ -1,5 +1,15 @@
 # Changelog
 
+## CLI 0.2.0 — 2026-09-05
+- Add the versioned SYNC PACK schema v1 contract for immutable, human-approved synchronization input artifacts.
+- Add deterministic `project sync plan <pack>` planning for explicit pack paths and packs stored in the stable `inbox/sync/` project directory.
+- Validate pack `project_id`, exact Git `base_commit`, approval metadata, referenced target IDs, expected targets, and the existing canonical project before planning.
+- Resolve existing slugged atomic object filenames by internal ID and produce an explicit allowed write set covering only approved object targets and applicable narrative documents.
+- Keep `proposal` and `unresolved` changes visible in planning context without granting canonical writes.
+- Bind plans to the exact pack bytes with SHA-256 and produce equivalent plan artifacts for an unchanged pack at the same HEAD.
+- Reject unsafe/path-traversing targets, duplicate pack and change IDs, missing targets, stale base commits, and changed content reusing an already planned pack ID.
+- Preserve legacy `project sync <OBJECT-ID>` behavior alongside the new `project sync plan <pack>` syntax.
+
 ## CLI 0.1.4 — 2026-09-04
 - Accept canonical atomic object filenames in both `ID.md` and `ID-slug.md` forms.
 - Validate that the filename ID prefix is well-formed and matches the object's internal `id`, while keeping the optional slug outside object identity and lookup.

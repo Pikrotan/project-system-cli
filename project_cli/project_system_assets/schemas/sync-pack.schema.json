@@ -1,0 +1,258 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-system.local/schemas/sync-pack-v1.schema.json",
+  "title": "Project System SYNC PACK v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "pack_id",
+    "project_id",
+    "source",
+    "created_at",
+    "base_commit",
+    "approval",
+    "change_class",
+    "changes",
+    "expected_targets",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "pack_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "project_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "base_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "approval": {
+      "type": "object",
+      "required": ["approved_by", "approved_at"],
+      "properties": {
+        "approved_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approved_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    "change_class": {
+      "enum": ["A", "B", "C", "D"]
+    },
+    "changes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/change"
+      }
+    },
+    "expected_targets": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "object_id": {
+      "type": "string",
+      "pattern": "^(?:DEC|REQ|FEAT|Q|RISK|EXP|SCR|FLOW|ENT|MET|DES|DEBT)-[0-9]{8}-[0-9a-f]{8}$"
+    },
+    "source": {
+      "type": "object",
+      "required": ["type", "ref"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "new_object": {
+      "type": "object",
+      "required": ["id", "type", "title", "body"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/object_id"
+        },
+        "type": {
+          "enum": [
+            "decision",
+            "requirement",
+            "feature",
+            "question",
+            "risk",
+            "experiment",
+            "screen",
+            "flow",
+            "entity",
+            "metric",
+            "design_change",
+            "debt"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?$"
+        },
+        "domain": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "frontmatter": {
+          "type": "object"
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "patch": {
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "frontmatter": {
+          "type": "object"
+        },
+        "body": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "change": {
+      "type": "object",
+      "required": ["change_id", "kind", "summary"],
+      "properties": {
+        "change_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
+        "kind": {
+          "enum": [
+            "create_object",
+            "update_object",
+            "retire_object",
+            "narrative_impact",
+            "proposal",
+            "unresolved"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_id": {
+          "$ref": "#/$defs/object_id"
+        },
+        "object": {
+          "$ref": "#/$defs/new_object"
+        },
+        "patch": {
+          "$ref": "#/$defs/patch"
+        },
+        "new_status": {
+          "enum": [
+            "superseded",
+            "deprecated",
+            "rejected",
+            "removed",
+            "resolved",
+            "cancelled",
+            "mitigated",
+            "accepted",
+            "closed"
+          ]
+        },
+        "replacement_id": {
+          "$ref": "#/$defs/object_id"
+        },
+        "narrative_paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "proposal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "related_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/object_id"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "create_object"}}},
+          "then": {"required": ["object"]}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "update_object"}}},
+          "then": {"required": ["target_id", "patch"]}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "retire_object"}}},
+          "then": {"required": ["target_id", "new_status"]}
+        },
+        {
+          "if": {"properties": {"kind": {"const": "narrative_impact"}}},
+          "then": {"required": ["narrative_paths"]}
+        },
+        {
+          "if": {"properties": {"kind": {"enum": ["proposal", "unresolved"]}}},
+          "then": {"required": ["proposal"]}
+        }
+      ]
+    }
+  }
+}

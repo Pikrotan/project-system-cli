@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-system-cli"
-version = "0.2.0"
+version = "0.3.0"
 description = "Git-native AI-neutral project knowledge and governance CLI"
 requires-python = ">=3.11"
 dependencies = ["PyYAML>=6.0", "jsonschema>=4.20"]

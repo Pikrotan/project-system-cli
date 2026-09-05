@@ -15,6 +15,8 @@ project sync plan D:\approved-inputs\SYNC-20260905-deadbeef.yaml
 
 Legacy object targeting remains available as `project sync <OBJECT-ID>`.
 
+Planning requires a clean Git working tree, excluding `.generated/**` and the selected pack itself. Pre-existing gitignored files outside `.generated/**` are recorded with path, size, and SHA-256; verification permits them only while that fingerprint remains unchanged. This keeps the later verification baseline unambiguous; dirty tracked/untracked baseline planning is not supported in Phase 2.
+
 ## Change kinds
 
 - `create_object`: declares a new collision-resistant object ID and proposed canonical content.
@@ -77,3 +79,26 @@ For a valid pack at the exact current `HEAD`, planning writes only:
 ```
 
 The manifest includes the SHA-256 hash of the exact pack bytes, approval metadata, resolved targets, allowed writes, protected/out-of-scope paths, proposal/unresolved items, warnings, and errors. Replanning unchanged content at the same `HEAD` produces equivalent bytes. Reusing a planned `pack_id` with changed content is rejected.
+
+`plan.json` and `manifest.json` carry the same deterministic SHA-256 integrity block over their canonical JSON payloads. Verification rejects missing, mismatched, or changed planning artifacts. These hashes detect accidental or uncoordinated tampering; they are not a digital signature and do not replace repository access controls.
+
+## Phase 2 verification
+
+After an external semantic executor changes canonical files, verify the result with either the original pack path or its pack ID:
+
+```text
+project sync verify D:\approved-inputs\SYNC-20260905-deadbeef.yaml
+project sync verify SYNC-20260905-deadbeef
+```
+
+Pack-ID lookup uses the source path recorded in the validated manifest, so the original pack must remain readable. Verification checks pack, plan, manifest, project, Git HEAD, and allowed-write integrity before reading the actual staged, unstaged, tracked, untracked, deleted, and renamed change set relative to `base_commit`. The exact selected pack and `.generated/**` are excluded; every other changed path must be in the validated plan's `allowed_write_set`. A canonical path with divergent staged and unstaged content is rejected because a single working-tree validation cannot certify both versions.
+
+On a valid scope, verification executes the deterministic pipeline `validate → generate → validate`, confirms generation did not change anything outside `.generated/**`, and writes only:
+
+```text
+.generated/sync/<pack_id>/verification.json
+.generated/sync/<pack_id>/verification.md
+.generated/sync/<pack_id>/diff-summary.md
+```
+
+Exit codes are `3` for integrity/preflight failure, `4` for Git scope violation, and `5` for canonical validation failure. Reports explicitly do not claim semantic correctness: human semantic review remains required. Verification never edits canonical content, repairs violations, invokes an LLM, commits, pushes, or creates a pull request.

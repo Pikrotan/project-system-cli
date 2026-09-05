@@ -2,6 +2,7 @@ from collections import Counter
 from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
+import re
 import subprocess
 
 from jsonschema import Draft202012Validator, FormatChecker
@@ -19,6 +20,7 @@ from .validation import validate
 
 MAX_SYNC_PACK_BYTES = 2 * 1024 * 1024
 PACK_SUFFIXES = {'.yaml', '.yml', '.json'}
+PACK_ID_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
 CANONICAL_CHANGE_KINDS = {
     'create_object',
     'update_object',
@@ -125,6 +127,96 @@ def _git_head(root):
     return result.stdout.strip().lower()
 
 
+def _git_status_paths(root):
+    result = subprocess.run(
+        ['git', 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
+        cwd=root,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SyncPlanError('cannot inspect Git working tree')
+    tokens = result.stdout.decode('utf-8', errors='surrogateescape').split('\0')
+    paths = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        index += 1
+        if not token:
+            continue
+        if len(token) < 4 or token[2] != ' ':
+            raise SyncPlanError('cannot parse Git working tree status')
+        status = token[:2]
+        paths.append(token[3:].replace('\\', '/'))
+        if 'R' in status or 'C' in status:
+            if index >= len(tokens) or not tokens[index]:
+                raise SyncPlanError('cannot parse renamed Git path')
+            paths.append(tokens[index].replace('\\', '/'))
+            index += 1
+    return list(dict.fromkeys(paths))
+
+
+def _ensure_clean_plan_baseline(root, pack_path):
+    exempt_pack = None
+    try:
+        exempt_pack = pack_path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        pass
+    dirty = [
+        path for path in _git_status_paths(root)
+        if not (path == '.generated' or path.startswith('.generated/'))
+        and path != exempt_pack
+    ]
+    if dirty:
+        raise SyncPlanError(
+            'planning requires a clean working tree except .generated/** and the selected pack: '
+            + ', '.join(sorted(dirty))
+        )
+
+
+def _ignored_untracked_baseline(root, pack_path):
+    result = subprocess.run(
+        ['git', 'ls-files', '--others', '--ignored', '--exclude-standard', '-z'],
+        cwd=root,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SyncPlanError('cannot inspect ignored Git working tree paths')
+    exempt_pack = None
+    try:
+        exempt_pack = pack_path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        pass
+    baseline = []
+    for value in sorted(
+        item.replace('\\', '/')
+        for item in result.stdout.decode('utf-8', errors='strict').split('\0')
+        if item
+    ):
+        if value == exempt_pack or value == '.generated' or value.startswith('.generated/'):
+            continue
+        pure = PurePosixPath(value)
+        if pure.is_absolute() or not pure.parts or any(part in {'', '.', '..'} for part in pure.parts):
+            raise SyncPlanError(f'unsafe ignored baseline path: {value}')
+        candidate = root.joinpath(*pure.parts)
+        try:
+            candidate.resolve(strict=False).relative_to(root.resolve())
+        except ValueError as exc:
+            raise SyncPlanError(f'ignored baseline path escapes project root: {value}') from exc
+        if candidate.is_symlink():
+            raise SyncPlanError(f'ignored baseline path is a symlink: {value}')
+        if not candidate.is_file():
+            raise SyncPlanError(f'ignored baseline path is not a regular file: {value}')
+        content = candidate.read_bytes()
+        baseline.append({
+            'path': pure.as_posix(),
+            'sha256': sha256(content).hexdigest(),
+            'bytes': len(content),
+        })
+    return baseline
+
+
 def _display_path(root, path):
     try:
         return path.relative_to(root).as_posix()
@@ -203,7 +295,29 @@ def _write_output(output, name, text):
     target = output / name
     if target.parent.resolve() != output.resolve():
         raise SyncPlanError(f'unsafe generated output path: {target}')
+    if target.is_symlink():
+        raise SyncPlanError(f'refusing to write through generated output symlink: {target}')
     atomic_write_text(target, text)
+
+
+def artifact_payload_sha256(document):
+    payload = dict(document)
+    payload.pop('artifact_integrity', None)
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(',', ':'),
+        ensure_ascii=False,
+    ).encode('utf-8')
+    return sha256(canonical).hexdigest()
+
+
+def artifact_integrity_block(plan, manifest):
+    return {
+        'algorithm': 'sha256',
+        'plan_payload_sha256': artifact_payload_sha256(plan),
+        'manifest_payload_sha256': artifact_payload_sha256(manifest),
+    }
 
 
 def _context_text(pack, pack_text, manifest, root, object_paths, narrative_paths):
@@ -275,6 +389,8 @@ def plan_sync(root, pack_path):
     if pack['base_commit'].lower() != head:
         raise SyncPlanError(f'stale base_commit: pack has {pack["base_commit"]}, HEAD is {head}')
     _scan_duplicate_pack_id(root, pack_path, pack['pack_id'])
+    _ensure_clean_plan_baseline(root, pack_path)
+    ignored_untracked_baseline = _ignored_untracked_baseline(root, pack_path)
 
     project_issues = validate(root)
     fatal_project_issues = [
@@ -312,6 +428,10 @@ def plan_sync(root, pack_path):
     warnings = [
         'Approval metadata is structurally validated; the local CLI does not prove approver identity.'
     ]
+    if ignored_untracked_baseline:
+        warnings.append(
+            f'{len(ignored_untracked_baseline)} pre-existing gitignored file(s) were fingerprinted as the verification baseline.'
+        )
     warnings.extend(
         f'canonical project warning at {location}: {message}'
         for severity, location, message in project_issues
@@ -521,6 +641,7 @@ def plan_sync(root, pack_path):
         'out_of_scope_paths': OUT_OF_SCOPE_PATHS,
         'impacted_narrative_docs': sorted(impacted_docs),
         'unresolved_proposal_items': unresolved_items,
+        'ignored_untracked_baseline': ignored_untracked_baseline,
         'warnings': list(dict.fromkeys(warnings)),
         'errors': [],
     }
@@ -535,7 +656,11 @@ def plan_sync(root, pack_path):
         'impacted_narrative_docs': sorted(impacted_docs),
         'allowed_write_set': sorted(allowed_write_set),
         'unresolved_proposal_items': unresolved_items,
+        'ignored_untracked_baseline': ignored_untracked_baseline,
     }
+    integrity = artifact_integrity_block(plan, manifest)
+    plan['artifact_integrity'] = integrity
+    manifest['artifact_integrity'] = integrity
     context = _context_text(
         pack,
         pack_text,

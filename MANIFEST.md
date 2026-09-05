@@ -1,7 +1,7 @@
 # Distribution Manifest
 
 - Template version: 1.1.0 Stable
-- CLI version: 0.2.0
+- CLI version: 0.3.0
 - Schema version: 1
 - Narrative templates: 34
 - Atomic object types: 12
@@ -13,11 +13,15 @@
 
 ## MVP CLI commands
 
-`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including `sync plan`), `bootstrap`, `prepare-pr`.
+`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including `sync plan` and `sync verify`), `bootstrap`, `prepare-pr`.
 
 ## Phase 1 deterministic SYNC
 
 Version 0.2.0 adds the versioned SYNC PACK v1 contract and deterministic `project sync plan <pack>` planning. Planning validates project, Git base, approval, and target identity; resolves an allowed write set; records proposals and unresolved items without canonical writes; and emits hash-bound, idempotent artifacts only under `.generated/sync/`. Legacy `project sync <OBJECT-ID>` remains supported.
+
+## Phase 2 deterministic SYNC verification
+
+Version 0.3.0 adds `project sync verify <PACK_PATH|PACK_ID>`. Verification binds the original pack, `plan.json`, and `manifest.json` to their recorded integrity data; rechecks project ID, Git base commit, planning baseline, and allowed write scope across tracked, staged, unstaged, untracked, deleted, renamed, and ignored-file changes; runs `validate → generate → validate`; and writes deterministic verification and diff-summary reports under `.generated/sync/<pack_id>/`. Atomic lifecycle output is structural evidence only: human semantic review remains required. Exit codes distinguish integrity/preflight (`3`), scope (`4`), and canonical validation (`5`) failures.
 
 ## Deliberately not automated in v1.1
 
@@ -29,7 +33,7 @@ Local validation proves schema/graph/filesystem invariants only. It cannot prove
 
 ## Stable verification baseline
 
-- Unit + adversarial regression suite: **59 passed, 1 platform-permission skip, 0 failed**.
+- Unit + adversarial regression suite: **83 passed, 1 platform-permission skip, 0 failed**.
 - Source-tree end-to-end flow: **passed**.
 - Wheel build: **passed**; packaged assets verified inside wheel.
 - Installed console entry point outside source checkout: `project --version → init → validate`: **passed**.

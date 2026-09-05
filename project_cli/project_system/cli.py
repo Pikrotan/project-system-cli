@@ -13,6 +13,7 @@ from .health import health
 from .modules import catalog, enable, disable
 from .tasking import task, bootstrap, prepare_pr
 from .sync_planning import plan_sync, SyncPlanError
+from .sync_verification import verify_sync, SyncVerifyError
 
 TYPES=list(DIRS)
 
@@ -42,7 +43,7 @@ def main(argv=None):
     q=sp.add_parser('enable'); q.add_argument('module')
     q=sp.add_parser('disable'); q.add_argument('module')
     q=sp.add_parser('task'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='implement')
-    q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, or "plan"'); q.add_argument('pack',nargs='?'); q.add_argument('--budget',choices=['small','medium','large'],default='medium')
+    q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, "plan", or "verify"'); q.add_argument('pack',nargs='?',help='SYNC PACK path or pack_id'); q.add_argument('--budget',choices=['small','medium','large'],default='medium')
     q=sp.add_parser('bootstrap'); q.add_argument('--budget',choices=['small','medium','large'],default='medium')
     sp.add_parser('prepare-pr')
     args=p.parse_args(argv)
@@ -77,6 +78,12 @@ def main(argv=None):
             try: out,_=plan_sync(root,args.pack); print(out)
             except SyncPlanError as exc:
                 print(f'sync plan failed: {exc}',file=sys.stderr); sys.exit(2)
+        elif args.target=='verify':
+            if not args.pack: p.error('project sync verify requires <pack-or-pack-id>')
+            try: out,_=verify_sync(root,args.pack); print(out)
+            except SyncVerifyError as exc:
+                print(f'sync verify failed [{exc.category}]: {exc}',file=sys.stderr)
+                sys.exit(exc.exit_code)
         else:
             if args.pack: p.error('legacy project sync accepts one object ID')
             out,_=task(root,args.target,'sync',args.budget,True); print(out)

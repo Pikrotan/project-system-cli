@@ -1,5 +1,15 @@
 # Changelog
 
+## CLI 0.3.0 — 2026-09-05
+- Add deterministic `project sync verify <PACK_PATH|PACK_ID>` verification while preserving `project sync plan <pack>` and legacy `project sync <OBJECT-ID>` behavior.
+- Bind verification to the exact SHA-256-protected `plan.json` and `manifest.json`, original pack bytes, project ID, and unchanged Git base commit.
+- Require a clean planning baseline and record fingerprints for pre-existing ignored files outside `.generated/**` so later ignored-file drift is detectable.
+- Verify the complete staged, unstaged, tracked, untracked, deleted, and renamed change set against the plan's validated `allowed_write_set`; reject divergent staged/unstaged content for one path and unsafe path or symlink escapes.
+- Run the deterministic `validate → generate → validate` pipeline after scope checks and ensure generation writes only under `.generated/**`.
+- Emit `verification.json`, `verification.md`, and `diff-summary.md` with validation results, object counts, Git scope evidence, unresolved reminders, and a deterministic atomic lifecycle summary.
+- Preserve the human semantic-review boundary: verification certifies integrity, scope, and machine-checkable invariants, but never claims semantic correctness or performs semantic editing.
+- Use distinct exit codes: `3` for integrity/preflight failures, `4` for allowed-write-scope violations, and `5` for canonical validation failures.
+
 ## CLI 0.2.0 — 2026-09-05
 - Add the versioned SYNC PACK schema v1 contract for immutable, human-approved synchronization input artifacts.
 - Add deterministic `project sync plan <pack>` planning for explicit pack paths and packs stored in the stable `inbox/sync/` project directory.

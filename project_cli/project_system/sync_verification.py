@@ -312,7 +312,7 @@ def _selector_is_path(selector):
     )
 
 
-def _resolve_integrity_inputs(root, selector):
+def _resolve_integrity_inputs(root, selector, *, require_base_head=True):
     root = Path(root).resolve()
     selector_value = str(selector)
     pack = None
@@ -383,7 +383,7 @@ def _resolve_integrity_inputs(root, selector):
         head = _git_head(root)
     except SyncPlanError as exc:
         raise SyncIntegrityError(str(exc)) from exc
-    if head != plan['base_commit']:
+    if require_base_head and head != plan['base_commit']:
         raise SyncIntegrityError(
             f'stale HEAD: plan base is {plan["base_commit"]}, current HEAD is {head}'
         )
@@ -812,8 +812,69 @@ def _diff_markdown(report):
     return '\n'.join(lines).rstrip() + '\n'
 
 
+def verification_report_payload_sha256(report):
+    payload = dict(report)
+    payload.pop('verification_integrity', None)
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(',', ':'),
+        ensure_ascii=False,
+    ).encode('utf-8')
+    return sha256(canonical).hexdigest()
+
+
+def _seal_verification_report(report):
+    report.pop('verification_integrity', None)
+    report['verification_integrity'] = {
+        'algorithm': 'sha256',
+        'report_payload_sha256': verification_report_payload_sha256(report),
+    }
+
+
+def verified_working_tree_state(root, plan, scope):
+    """Return canonical state data whose digest survives staging and committing."""
+    root = Path(root).resolve()
+    entries = []
+    for value in scope['actual_changed_paths']:
+        path = _safe_git_path(root, value)
+        candidate = root.joinpath(*PurePosixPath(path).parts)
+        if candidate.is_symlink():
+            raise SyncScopeError(f'verified path is a symlink: {path}')
+        if candidate.exists():
+            if not candidate.is_file():
+                raise SyncScopeError(f'verified path is not a regular file: {path}')
+            content = candidate.read_bytes()
+            entries.append({
+                'path': path,
+                'state': 'file',
+                'sha256': sha256(content).hexdigest(),
+                'bytes': len(content),
+                'mode': candidate.stat().st_mode & 0o777,
+            })
+        else:
+            entries.append({'path': path, 'state': 'absent'})
+    payload = {
+        'schema_version': 1,
+        'base_commit': plan['base_commit'],
+        'allowed_write_set': list(plan['allowed_write_set']),
+        'actual_changed_paths': list(scope['actual_changed_paths']),
+        'actual_changed_canonical_paths': list(scope['actual_changed_canonical_paths']),
+        'ignored_untracked_baseline': list(plan['ignored_untracked_baseline']),
+        'entries': entries,
+    }
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(',', ':'),
+        ensure_ascii=False,
+    ).encode('utf-8')
+    return payload, sha256(canonical).hexdigest()
+
+
 def _write_reports(output, report):
     try:
+        _seal_verification_report(report)
         _write_output(
             output,
             'verification.json',
@@ -935,6 +996,11 @@ def verify_sync(root, selector):
         raise SyncValidationError('post-generation validation failed')
 
     report['verification_result'] = 'passed'
+    report.update(scope_after)
+    report['git_changes'] = _reportable_git_changes(
+        changes_after,
+        scope_after['ignored_untracked_drift'],
+    )
     report['object_counts'] = _object_counts(root)
     report['diff_stat'] = _diff_stat(
         root,
@@ -942,5 +1008,12 @@ def verify_sync(root, selector):
         changes_after,
         scope_after['ignored_untracked_drift'],
     )
+    verified_state, verification_fingerprint = verified_working_tree_state(
+        root,
+        plan,
+        scope_after,
+    )
+    report['verified_working_tree_state'] = verified_state
+    report['verification_fingerprint'] = verification_fingerprint
     _write_reports(integrity['output'], report)
     return integrity['output'], report

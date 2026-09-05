@@ -2,6 +2,17 @@
 
 SYNC PACK is an immutable, human-approved input artifact for deterministic synchronization planning. It is provenance, not canonical product truth. `project sync plan` never edits `knowledge/`, `docs/`, configuration, source code, or Git state, and it does not invoke an LLM.
 
+The deterministic lifecycle is:
+
+```text
+plan
+→ external semantic edit
+→ verify
+→ finalize
+→ explicit commit
+→ explicit push
+```
+
 The machine contract is `project_cli/project_system_assets/schemas/sync-pack.schema.json`.
 
 ## Storage and invocation
@@ -102,3 +113,27 @@ On a valid scope, verification executes the deterministic pipeline `validate →
 ```
 
 Exit codes are `3` for integrity/preflight failure, `4` for Git scope violation, and `5` for canonical validation failure. Reports explicitly do not claim semantic correctness: human semantic review remains required. Verification never edits canonical content, repairs violations, invokes an LLM, commits, pushes, or creates a pull request.
+
+## Phase 3 finalization
+
+Finalization is available only after a successful verification of the exact current canonical state:
+
+```text
+project sync finalize <PACK_PATH|PACK_ID>
+project sync finalize <PACK_PATH|PACK_ID> --commit
+project sync finalize <PACK_PATH|PACK_ID> --commit --push
+project sync finalize <PACK_PATH|PACK_ID> --push
+project sync finalize <PACK_PATH|PACK_ID> --commit --message "approved message"
+```
+
+The default invocation is a dry-run preparation stage: it performs every integrity, verified-state, repository, branch, operation-state, conflict, scope, staging, remote, and upstream preflight that does not itself change the index, create a commit, or contact a remote. It writes only `finalization.json` and `finalization.md` under the pack's existing `.generated/sync/<pack_id>/` directory.
+
+Successful verification records a SHA-256 fingerprint of the exact verified canonical paths, their content or absence, the allowed write set, base commit, and ignored-file baseline. Finalization verifies the pack, project, plan, manifest, verification-report integrity, `verification_result`, HEAD, actual canonical change set, and this fingerprint again. Any canonical edit after verification makes the report stale and requires another `project sync verify`.
+
+`--commit` is the only operation that may create a commit. It is treated as explicit technical authorization to record the already verified state, but it neither proves the user's identity nor changes canonical approval metadata. The CLI stages only the exact verified canonical pathspecs, checks the resulting index against the verified set, excludes `.generated/**`, and restores the prior index bytes if staging or commit fails without altering working-tree content. The default message is `sync: apply <PACK_ID>`; `--message` is passed directly as one Git argument and is accepted only with `--commit`.
+
+`--push` never creates a commit implicitly. It requires either `--commit --push` in the same invocation or a previously recorded, integrity-checked SYNC commit that is still the current HEAD and a direct child of the pack's base commit. Push requires a configured branch, remote, and upstream, uses ordinary `git push`, and never adds force options. A failed push leaves the local commit intact and can be retried. Repeated commit and push requests are idempotent when Git history still proves the recorded pack-to-commit relationship; changed history fails closed.
+
+The finalization state machine is `verified → prepared → committed → pushed`. Reports include pack/base/fingerprint identity, branch/upstream, verified and staged paths, requested operations, commit SHA/message/paths, push outcome, warnings, errors, and the human semantic-review reminder.
+
+Finalization reuses exit code `3` for integrity or stale-verification failures and `4` for repository/scope/preflight violations. Exit code `6` denotes staging or commit failure; exit code `7` denotes push precondition or push-command failure. Exit code `5` remains reserved for Phase 2 canonical validation failure.

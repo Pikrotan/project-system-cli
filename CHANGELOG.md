@@ -1,5 +1,19 @@
 # Changelog
 
+## CLI 0.4.0 — 2026-09-05
+- Add `project sync finalize <PACK_PATH|PACK_ID>` as a dry-run preparation stage by default, without staging, committing, or pushing.
+- Add separately explicit `--commit`, `--push`, and safely argumentized `--message` controls; `--push` never creates a commit implicitly.
+- Bind finalization to an integrity-checked successful verification and a deterministic fingerprint of the exact verified canonical working-tree state.
+- Reject canonical edits made after verification as stale and require `project sync verify` to be run again before finalization.
+- Stage only the exact verified canonical pathspecs, compare staged objects and paths with the verified state, and exclude `.generated/**` from commits.
+- Perform fail-closed Git preflight for repository, branch, HEAD, upstream, remote, detached HEAD, in-progress merge/rebase/cherry-pick, conflicts, staged/unstaged/untracked scope, and ignored-file drift.
+- Record the deterministic state machine `verified → prepared → committed → pushed`, including commit SHA/message/paths and push outcome, in integrity-protected finalization reports.
+- Make repeated `--commit` and `--push` idempotent when Git history still proves the pack-to-commit relationship, reporting `already_committed` and `already_synchronized` without duplicate side effects.
+- Preserve working-tree content on failure and restore the prior Git index after pre-commit staging or commit failure; never use destructive rollback or force push.
+- Use exit code `6` for staging/commit failures and `7` for push precondition or transport failures, while retaining Phase 2 integrity/scope/validation exit codes.
+- Keep human semantic approval explicit: deterministic verification does not prove semantic correctness or approver identity, and `--commit` is only technical authorization to record the verified state.
+- Preserve `project sync plan`, `project sync verify`, and legacy `project sync <OBJECT-ID>` behavior.
+
 ## CLI 0.3.0 — 2026-09-05
 - Add deterministic `project sync verify <PACK_PATH|PACK_ID>` verification while preserving `project sync plan <pack>` and legacy `project sync <OBJECT-ID>` behavior.
 - Bind verification to the exact SHA-256-protected `plan.json` and `manifest.json`, original pack bytes, project ID, and unchanged Git base commit.

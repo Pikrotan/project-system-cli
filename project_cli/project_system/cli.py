@@ -14,6 +14,7 @@ from .modules import catalog, enable, disable
 from .tasking import task, bootstrap, prepare_pr
 from .sync_planning import plan_sync, SyncPlanError
 from .sync_verification import verify_sync, SyncVerifyError
+from .sync_finalization import finalize_sync, SyncFinalizeError
 
 TYPES=list(DIRS)
 
@@ -43,7 +44,7 @@ def main(argv=None):
     q=sp.add_parser('enable'); q.add_argument('module')
     q=sp.add_parser('disable'); q.add_argument('module')
     q=sp.add_parser('task'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='implement')
-    q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, "plan", or "verify"'); q.add_argument('pack',nargs='?',help='SYNC PACK path or pack_id'); q.add_argument('--budget',choices=['small','medium','large'],default='medium')
+    q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, "plan", "verify", or "finalize"'); q.add_argument('pack',nargs='?',help='SYNC PACK path or pack_id'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--commit',action='store_true',help='explicitly commit the verified canonical state'); q.add_argument('--push',action='store_true',help='explicitly push an already verified SYNC commit'); q.add_argument('--message',help='custom commit message; valid only with --commit')
     q=sp.add_parser('bootstrap'); q.add_argument('--budget',choices=['small','medium','large'],default='medium')
     sp.add_parser('prepare-pr')
     args=p.parse_args(argv)
@@ -75,17 +76,34 @@ def main(argv=None):
     elif args.cmd=='sync':
         if args.target=='plan':
             if not args.pack: p.error('project sync plan requires <pack>')
+            if args.commit or args.push or args.message is not None: p.error('sync plan does not accept finalize options')
             try: out,_=plan_sync(root,args.pack); print(out)
             except SyncPlanError as exc:
                 print(f'sync plan failed: {exc}',file=sys.stderr); sys.exit(2)
         elif args.target=='verify':
             if not args.pack: p.error('project sync verify requires <pack-or-pack-id>')
+            if args.commit or args.push or args.message is not None: p.error('sync verify does not accept finalize options')
             try: out,_=verify_sync(root,args.pack); print(out)
             except SyncVerifyError as exc:
                 print(f'sync verify failed [{exc.category}]: {exc}',file=sys.stderr)
                 sys.exit(exc.exit_code)
+        elif args.target=='finalize':
+            if not args.pack: p.error('project sync finalize requires <pack-or-pack-id>')
+            try:
+                out,_=finalize_sync(
+                    root,
+                    args.pack,
+                    commit=args.commit,
+                    push=args.push,
+                    message=args.message,
+                )
+                print(out)
+            except SyncFinalizeError as exc:
+                print(f'sync finalize failed [{exc.category}]: {exc}',file=sys.stderr)
+                sys.exit(exc.exit_code)
         else:
             if args.pack: p.error('legacy project sync accepts one object ID')
+            if args.commit or args.push or args.message is not None: p.error('legacy project sync does not accept finalize options')
             out,_=task(root,args.target,'sync',args.budget,True); print(out)
     elif args.cmd=='bootstrap':
         out,_=bootstrap(root,args.budget); print(out)

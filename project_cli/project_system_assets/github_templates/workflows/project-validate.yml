@@ -14,8 +14,8 @@ jobs:
       - name: Install Project System CLI
         run: |
           # Configure one trusted source for your team before enabling this workflow:
-          # pip install project-system-cli==0.3.0
-          # OR pip install git+https://github.com/YOUR_ORG/project-system.git@v0.3.0
+          # pip install project-system-cli==0.4.0
+          # OR pip install git+https://github.com/YOUR_ORG/project-system.git@v0.4.0
           echo "Configure the Project System CLI install source in this workflow."
           exit 1
       - run: project validate

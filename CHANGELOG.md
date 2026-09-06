@@ -1,5 +1,18 @@
 # Changelog
 
+## CLI 0.5.0 — 2026-09-06
+- Add Bridge v1 / deterministic SYNC intake with a versioned SYNC REQUEST v1 transport contract sharing change definitions and target validation with SYNC PACK v1.
+- Add `project sync intake <REQUEST_PATH>` for approved request files and `project sync intake -` for UTF-8 stdin/pipe workflows, including `Get-Clipboard | project sync intake -` when the shell uses UTF-8. Optional `--plan` runs existing deterministic planning after intake.
+- Bind `project_id` from local `project.yaml` and `base_commit` from current Git HEAD, allocate a collision-resistant `SYNC-YYYYMMDD-<8 lowercase hex chars>` pack ID, and record the local UTC intake time without semantic interpretation.
+- Preserve approval/source/change data and the original request ID, exact-byte SHA-256 and intake timestamp in the backward-compatible optional SYNC PACK `provenance` block.
+- Exclusively create immutable input packs at `inbox/sync/<PACK_ID>.yaml`; never overwrite an existing pack. Emit derived `intake.json` and `intake.md` reports under `.generated/sync/<PACK_ID>/`.
+- Reuse an unchanged pack for identical request bytes, project and HEAD, preserving pack identity, timestamp and bytes. At a different HEAD, create a new locally bound pack and preserve the earlier binding. Reject revised bytes reusing an existing request ID.
+- Reject request-supplied `project_id`, `base_commit`, `pack_id`, output paths and other unsupported fields; validate schema/version, approval timestamps, duplicate keys/change IDs, target IDs, expected targets, narrative paths and create-object identities before pack creation.
+- Reject unsafe YAML, anchors/aliases, oversized input, traversal, symlink/junction output escapes, duplicate bindings and pack overwrite attempts; serialize cooperating intake writers with a local generated lock.
+- Keep the clean-baseline exception limited to the exact selected pack and `.generated/**`, not the whole inbox. Intake with `--plan` requires a clean planning baseline; intake alone permits structurally valid existing edits without making canonical writes.
+- Preserve `proposal` and `unresolved` as non-canonical input, and never apply semantic edits, modify canonical knowledge/docs, commit, push or call an LLM during intake. Approval validation remains structural, not proof of human identity.
+- Include `SYNC_REQUEST_V1.md`, `sync-request.schema.json`, the shared pack contract/schema and intake runtime in package assets. Preserve legacy `project sync <OBJECT-ID>` and `project sync plan`, `project sync verify`, `project sync finalize` behavior.
+
 ## CLI 0.4.0 — 2026-09-05
 - Add `project sync finalize <PACK_PATH|PACK_ID>` as a dry-run preparation stage by default, without staging, committing, or pushing.
 - Add separately explicit `--commit`, `--push`, and safely argumentized `--message` controls; `--push` never creates a commit implicitly.

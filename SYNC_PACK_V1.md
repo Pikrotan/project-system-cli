@@ -26,6 +26,12 @@ project sync plan D:\approved-inputs\SYNC-20260905-deadbeef.yaml
 
 Legacy object targeting remains available as `project sync <OBJECT-ID>`.
 
+## Bridge v1 intake
+
+An external discussion need not know the local project ID or Git HEAD. It can supply a [SYNC REQUEST v1](SYNC_REQUEST_V1.md), accepted with `project sync intake <REQUEST_PATH|-> [--plan]`. Intake validates the shared change contract and target identities, binds the current project/HEAD locally, preserves approval, and exclusively creates `inbox/sync/SYNC-YYYYMMDD-xxxxxxxx.yaml`. It never applies canonical edits. The exact selected inbox pack is already exempt from the planning clean-baseline check; unrelated inbox changes are not exempt.
+
+Intake-created packs carry an optional `provenance` object with `request_id`, `request_sha256`, `source`, and `intake_at`. The request hash covers the exact received UTF-8 bytes; `created_at` and `intake_at` record the same local UTC intake time. Existing packs without provenance remain valid. Phases 1–3 bind the whole pack, including provenance, through the existing pack SHA-256; no special handling is required. Same request bytes/project/HEAD reuse an unchanged binding; another HEAD creates a new binding; changed bytes with an already used request ID are rejected.
+
 Planning requires a clean Git working tree, excluding `.generated/**` and the selected pack itself. Pre-existing gitignored files outside `.generated/**` are recorded with path, size, and SHA-256; verification permits them only while that fingerprint remains unchanged. This keeps the later verification baseline unambiguous; dirty tracked/untracked baseline planning is not supported in Phase 2.
 
 ## Change kinds

@@ -1,4 +1,5 @@
 from collections import Counter
+from datetime import datetime
 from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
@@ -83,28 +84,56 @@ def _load_pack_text(path):
     size = path.stat().st_size
     if size > MAX_SYNC_PACK_BYTES:
         raise SyncPlanError(f'SYNC PACK exceeds {MAX_SYNC_PACK_BYTES} bytes')
+    with path.open('rb') as stream:
+        raw = stream.read(MAX_SYNC_PACK_BYTES + 1)
+    pack, text = load_sync_bytes(raw)
+    return pack, text, raw
+
+
+def load_sync_bytes(raw, label='SYNC PACK'):
+    """Shared bounded, strict transport parser; hash callers' original bytes."""
+    if len(raw) > MAX_SYNC_PACK_BYTES:
+        raise SyncPlanError(f'{label} exceeds {MAX_SYNC_PACK_BYTES} bytes')
     try:
-        raw = path.read_bytes()
-        text = raw.decode('utf-8')
+        text = raw.decode('utf-8-sig')
     except UnicodeDecodeError as exc:
-        raise SyncPlanError('SYNC PACK must be UTF-8') from exc
+        raise SyncPlanError(f'{label} must be UTF-8') from exc
     try:
         _reject_yaml_aliases(text)
         pack = yaml.load(text, Loader=SyncPackLoader)
     except SyncPlanError:
         raise
     except Exception as exc:
-        raise SyncPlanError(f'cannot parse SYNC PACK: {exc}') from exc
+        raise SyncPlanError(f'cannot parse {label}: {exc}') from exc
     if not isinstance(pack, dict):
-        raise SyncPlanError('SYNC PACK root must be a mapping/object')
-    return pack, text, raw
+        raise SyncPlanError(f'{label} root must be a mapping/object')
+    return pack, text
+
+
+def sync_format_checker():
+    """Check required timestamps even without jsonschema's optional format extras."""
+    checker = FormatChecker()
+
+    @checker.checks('date-time', raises=ValueError)
+    def date_time(value):
+        if not isinstance(value, str):
+            return True  # The schema's type constraint handles non-strings.
+        if not re.fullmatch(
+            r'[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}'
+            r'(?:\.[0-9]+)?(?:[Zz]|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])', value,
+        ):
+            return False
+        datetime.fromisoformat(value.upper().replace('Z', '+00:00'))
+        return True
+
+    return checker
 
 
 def _validate_pack_schema(pack):
     schema = json.loads(
         (distribution_root() / 'schemas' / 'sync-pack.schema.json').read_text(encoding='utf-8')
     )
-    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    validator = Draft202012Validator(schema, format_checker=sync_format_checker())
     errors = sorted(validator.iter_errors(pack), key=lambda error: list(error.path))
     if errors:
         rendered = []
@@ -370,7 +399,22 @@ def plan_sync(root, pack_path):
     supplied_path = Path(pack_path)
     pack_path = (Path.cwd() / supplied_path).resolve() if not supplied_path.is_absolute() else supplied_path.resolve()
     pack, pack_text, pack_bytes = _load_pack_text(pack_path)
+    output, manifest, plan, context = prepare_sync_plan(
+        root, pack_path, pack, pack_text, pack_bytes,
+    )
+    output.mkdir(parents=True, exist_ok=True)
+    _write_output(output, 'plan.json', json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False) + '\n')
+    _write_output(output, 'manifest.json', json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + '\n')
+    _write_output(output, 'context.md', context)
+    return output, manifest
+
+
+def prepare_sync_plan(root, pack_path, pack, pack_text, pack_bytes, *, require_clean=True):
+    """Resolve/validate entirely in memory for both planning and intake."""
+    root = Path(root).resolve()
     _validate_pack_schema(pack)
+    if not pack['approval']['approved_by'].strip():
+        raise SyncPlanError('approval.approved_by must not be whitespace')
 
     change_ids = [change['change_id'] for change in pack['changes']]
     duplicates = sorted(change_id for change_id, count in Counter(change_ids).items() if count > 1)
@@ -389,7 +433,8 @@ def plan_sync(root, pack_path):
     if pack['base_commit'].lower() != head:
         raise SyncPlanError(f'stale base_commit: pack has {pack["base_commit"]}, HEAD is {head}')
     _scan_duplicate_pack_id(root, pack_path, pack['pack_id'])
-    _ensure_clean_plan_baseline(root, pack_path)
+    if require_clean:
+        _ensure_clean_plan_baseline(root, pack_path)
     ignored_untracked_baseline = _ignored_untracked_baseline(root, pack_path)
 
     project_issues = validate(root)
@@ -669,8 +714,4 @@ def plan_sync(root, pack_path):
         object_context_paths,
         narrative_context_paths,
     )
-    output.mkdir(parents=True, exist_ok=True)
-    _write_output(output, 'plan.json', json.dumps(plan, indent=2, sort_keys=True, ensure_ascii=False) + '\n')
-    _write_output(output, 'manifest.json', json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + '\n')
-    _write_output(output, 'context.md', context)
-    return output, manifest
+    return output, manifest, plan, context

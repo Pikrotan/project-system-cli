@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-system.local/schemas/sync-request-v1.schema.json",
+  "title": "Project System SYNC REQUEST v1",
+  "type": "object",
+  "required": ["schema_version", "request_id", "source", "approval", "change_class", "changes", "expected_targets", "notes"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "request_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "source": {"$ref": "sync-pack-v1.schema.json#/properties/source"},
+    "approval": {"$ref": "sync-pack-v1.schema.json#/properties/approval"},
+    "change_class": {"$ref": "sync-pack-v1.schema.json#/properties/change_class"},
+    "changes": {"$ref": "sync-pack-v1.schema.json#/properties/changes"},
+    "expected_targets": {"$ref": "sync-pack-v1.schema.json#/properties/expected_targets"},
+    "notes": {"$ref": "sync-pack-v1.schema.json#/properties/notes"}
+  },
+  "additionalProperties": false
+}

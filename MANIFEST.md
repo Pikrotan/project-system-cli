@@ -1,19 +1,28 @@
 # Distribution Manifest
 
 - Template version: 1.1.0 Stable
-- CLI version: 0.4.0
+- CLI version: 0.5.0
 - Schema version: 1
 - Narrative templates: 34
 - Atomic object types: 12
 - Blueprint modules: 13
-- JSON schemas: 15
+- JSON schemas: 16
 - Machine assets: packaged in `project_cli/project_system_assets/` for source and wheel installs
 - SYNC PACK assets: v1 contract document and JSON schema included in release artifacts
+- SYNC REQUEST assets: Bridge v1 contract document and shared-definition JSON schema included in release/package assets
 - Adversarial hardening: path/symlink safety, transactional module enable rollback, target-first atomic context budgeting, 8-char random IDs, strict frontmatter parsing, symmetric blueprint conflicts
 
 ## MVP CLI commands
 
-`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including `sync plan`, `sync verify`, and `sync finalize`), `bootstrap`, `prepare-pr`.
+`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including `sync intake`, `sync plan`, `sync verify`, and `sync finalize`), `bootstrap`, `prepare-pr`.
+
+## Bridge v1 deterministic intake
+
+Version 0.5.0 adds `project sync intake <REQUEST_PATH>` and `project sync intake -` for UTF-8 stdin/pipe workflows, with optional `--plan`. The strict SYNC REQUEST v1 transport rejects request-supplied `project_id`, `base_commit` and `pack_id`; shared Phase 1 validation resolves targets before exclusive immutable pack creation in `inbox/sync/`. Local binding reads project identity and HEAD, generates a collision-resistant `SYNC-YYYYMMDD-xxxxxxxx` pack ID, and preserves approval and request SHA-256 provenance. Identical request bytes at the same project/HEAD reuse the pack; another HEAD creates a new binding without replacing the earlier pack. Planning exempts only the selected pack and `.generated/**`, never the entire inbox. Reports stay under `.generated/sync/`; intake never edits canonical content, commits or pushes. See `SYNC_REQUEST_V1.md` for encoding, baseline, recovery and trust boundaries.
+
+Bridge implementation verification before release metadata: **164 passed, 1 Windows symlink-permission skip**; installed-wheel file/stdin intake, plan, verify and dry-run finalize passed. Real SportOS file/stdin intake and planning passed in that earlier implementation check; temporary inputs/outputs were removed and the original file hashes, directory inventory and HEAD were unchanged.
+
+CLI 0.5.0 release-metadata verification: **164 passed, 1 Windows symlink-permission skip**. Temporary installed-wheel checks passed for version/assets, file and stdin intake, same-HEAD reuse, new binding at another HEAD, planning, verification, dry-run finalization and legacy sync. Request-supplied project/base/pack identities, duplicate change IDs, traversal and malformed input were rejected with exit code `2`. No SYNC commit/push was performed; SportOS was not accessed for this release check.
 
 ## Phase 1 deterministic SYNC
 

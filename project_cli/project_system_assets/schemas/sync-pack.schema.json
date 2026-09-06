@@ -72,6 +72,17 @@
       },
       "uniqueItems": true
     },
+    "provenance": {
+      "type": "object",
+      "required": ["request_id", "request_sha256", "source", "intake_at"],
+      "properties": {
+        "request_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source": {"$ref": "#/$defs/source"},
+        "intake_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
     "notes": {
       "type": "string"
     }

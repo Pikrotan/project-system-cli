@@ -1,5 +1,14 @@
 # Changelog
 
+## CLI 0.6.0 — 2026-09-07
+- Add universal `project sync pull` and `project sync pull --plan`, deriving the GitHub repository from origin and using local gh GET calls for transport/authentication without storing tokens.
+- Accept only open Issues with the exact `[SYNC REQUEST]` title prefix and an explicitly allowlisted creator; support an optional expected-repository pin and fail closed without opt-in policy.
+- Require exactly one raw or fenced SYNC REQUEST v1 document, treating surrounding prose as inert, and delegate parsing, validation, binding, immutable pack creation and planning to existing Bridge v1 components.
+- Add optional pack/intake transport provenance: repository, Issue number/URL/author/update time and body/request/title SHA-256 hashes. Older requests/packs and Phases 1–3 remain compatible.
+- Acknowledge successful input locally with generated pull receipts; never close, label or comment on Issues. Repeated pulls preserve the original binding even at another HEAD; selected-Issue drift blocks reuse, while unrelated historical drift is isolated as a reconciliation warning.
+- Reject duplicate request identities across relevant open transport candidates even with `--issue`, plus wrong repositories, unauthorized authors, malformed/unsafe input and output escapes; fail without partial batch processing when multiple candidates require explicit selection.
+- Preserve canonical content, selected-pack-only clean-baseline exceptions, and all 0.5.0 commands. Pull never stages, commits, pushes, edits semantics or invokes an LLM.
+
 ## CLI 0.5.0 — 2026-09-06
 - Add Bridge v1 / deterministic SYNC intake with a versioned SYNC REQUEST v1 transport contract sharing change definitions and target validation with SYNC PACK v1.
 - Add `project sync intake <REQUEST_PATH>` for approved request files and `project sync intake -` for UTF-8 stdin/pipe workflows, including `Get-Clipboard | project sync intake -` when the shell uses UTF-8. Optional `--plan` runs existing deterministic planning after intake.

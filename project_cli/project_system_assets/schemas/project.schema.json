@@ -88,7 +88,15 @@
       }
     },
     "external_systems": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "github": {
+          "type": "object",
+          "properties": {
+            "sync_pull": {"$ref": "#/$defs/github_sync_pull"}
+          }
+        }
+      }
     },
     "ai": {
       "type": "object"
@@ -100,5 +108,19 @@
       "type": "object"
     }
   },
-  "additionalProperties": true
+  "additionalProperties": true,
+  "$defs": {
+    "github_sync_pull": {
+      "type": "object",
+      "required": ["allowed_authors"],
+      "properties": {
+        "allowed_authors": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z0-9-]+(?:\\[bot\\])?$"}
+        },
+        "expected_repository": {"type": "string", "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$"}
+      },
+      "additionalProperties": false
+    }
+  }
 }

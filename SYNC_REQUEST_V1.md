@@ -57,6 +57,8 @@ notes: Illustrative transport only; approval of transport is not resolution of t
 
 ## CLI
 
+[Bridge v2](SYNC_PULL_V2.md) also accepts this unchanged request contract from a marked, allowlisted GitHub Issue through `project sync pull [--plan]`. Transport provenance is added locally; it is not a new request field.
+
 Run inside the intended initialized Git project, with an existing HEAD:
 
 ```text

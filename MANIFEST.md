@@ -1,7 +1,7 @@
 # Distribution Manifest
 
 - Template version: 1.1.0 Stable
-- CLI version: 0.5.0
+- CLI version: 0.6.0
 - Schema version: 1
 - Narrative templates: 34
 - Atomic object types: 12
@@ -10,11 +10,18 @@
 - Machine assets: packaged in `project_cli/project_system_assets/` for source and wheel installs
 - SYNC PACK assets: v1 contract document and JSON schema included in release artifacts
 - SYNC REQUEST assets: Bridge v1 contract document and shared-definition JSON schema included in release/package assets
+- SYNC pull assets: Bridge v2 contract, transport runtime and optional policy/provenance schemas included in package assets
 - Adversarial hardening: path/symlink safety, transactional module enable rollback, target-first atomic context budgeting, 8-char random IDs, strict frontmatter parsing, symmetric blueprint conflicts
 
 ## MVP CLI commands
 
-`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including `sync intake`, `sync plan`, `sync verify`, and `sync finalize`), `bootstrap`, `prepare-pr`.
+`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including `sync pull`, `sync intake`, `sync plan`, `sync verify`, and `sync finalize`), `bootstrap`, `prepare-pr`.
+
+## Bridge v2 transport
+
+Version 0.6.0 adds origin-bound GitHub Issue retrieval through gh with explicit author allowlists, strict markers, shared intake validation and immutable transport provenance. Acknowledgement is local-only; Issues remain open. Repeated pulls reuse the original Issue binding across HEAD changes; selected transport drift blocks reuse, while unrelated historical drift is reported for reconciliation without blocking independent requests. Multiple pending requests require explicit selection, and duplicate request identities remain blocking even with `--issue`. No canonical edits, remote Issue writes, Git staging, commits or pushes occur. See `SYNC_PULL_V2.md` for setup, exact input format, limits and recovery boundaries.
+
+Bridge v2 verification: **234 passed, 1 Windows symlink-permission skip**. Installed-wheel smoke exercises pull/plan/reuse, rejection paths, verification and dry-run finalization through mocked gh REST responses at the subprocess boundary. A separate authenticated live GET confirms that the owner-corrected open test Issue now includes the required unresolved `proposal`, passes the unchanged SYNC REQUEST v1 validator, and plans with an empty allowed write set. No production intake was performed, SportOS and the Issue were not changed, and production opt-in policy remains untouched. Historical release/verification artifacts remain unchanged.
 
 ## Bridge v1 deterministic intake
 

@@ -34,6 +34,8 @@ Intake-created packs carry an optional `provenance` object with `request_id`, `r
 
 Planning requires a clean Git working tree, excluding `.generated/**` and the selected pack itself. Pre-existing gitignored files outside `.generated/**` are recorded with path, size, and SHA-256; verification permits them only while that fingerprint remains unchanged. This keeps the later verification baseline unambiguous; dirty tracked/untracked baseline planning is not supported in Phase 2.
 
+[Bridge v2 pull](SYNC_PULL_V2.md) can populate optional `provenance.transport` with GitHub repository, Issue number/URL/author/update time and body/request/title hashes. These are locally obtained through gh, not supplied by SYNC REQUEST. Older packs remain valid; verification/finalization hash the complete pack unchanged. Pull acknowledges a specific Issue locally and does not automatically rebind it when HEAD advances.
+
 ## Change kinds
 
 - `create_object`: declares a new collision-resistant object ID and proposed canonical content.

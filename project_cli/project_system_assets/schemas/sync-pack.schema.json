@@ -79,7 +79,8 @@
         "request_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
         "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "source": {"$ref": "#/$defs/source"},
-        "intake_at": {"type": "string", "format": "date-time"}
+        "intake_at": {"type": "string", "format": "date-time"},
+        "transport": {"$ref": "#/$defs/github_issue_transport"}
       },
       "additionalProperties": false
     },
@@ -89,6 +90,22 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "github_issue_transport": {
+      "type": "object",
+      "required": ["kind", "repository", "issue_number", "issue_url", "issue_author", "issue_updated_at", "body_sha256", "request_sha256", "title_sha256"],
+      "properties": {
+        "kind": {"const": "github_issue"},
+        "repository": {"type": "string", "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$"},
+        "issue_number": {"type": "integer", "minimum": 1},
+        "issue_url": {"type": "string", "pattern": "^https://github\\.com/[A-Za-z0-9-]+/[A-Za-z0-9_.-]+/issues/[1-9][0-9]*$"},
+        "issue_author": {"type": "string", "minLength": 1},
+        "issue_updated_at": {"type": "string", "format": "date-time"},
+        "body_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "title_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
     "object_id": {
       "type": "string",
       "pattern": "^(?:DEC|REQ|FEAT|Q|RISK|EXP|SCR|FLOW|ENT|MET|DES|DEBT)-[0-9]{8}-[0-9a-f]{8}$"

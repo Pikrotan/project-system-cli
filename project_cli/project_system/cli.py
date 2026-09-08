@@ -16,6 +16,7 @@ from .sync_planning import plan_sync, SyncPlanError
 from .sync_verification import verify_sync, SyncVerifyError
 from .sync_finalization import finalize_sync, SyncFinalizeError
 from .sync_intake import intake_sync, SyncIntakeError
+from .sync_pull import pull_sync, SyncPullError
 
 TYPES=list(DIRS)
 
@@ -45,7 +46,7 @@ def main(argv=None):
     q=sp.add_parser('enable'); q.add_argument('module')
     q=sp.add_parser('disable'); q.add_argument('module')
     q=sp.add_parser('task'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='implement')
-    q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, "intake", "plan", "verify", or "finalize"'); q.add_argument('pack',nargs='?',help='SYNC REQUEST path (or - for stdin), SYNC PACK path, or pack_id'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--commit',action='store_true',help='explicitly commit the verified canonical state'); q.add_argument('--push',action='store_true',help='explicitly push an already verified SYNC commit'); q.add_argument('--message',help='custom commit message; valid only with --commit'); q.add_argument('--plan',action='store_true',help='plan the bound pack after intake')
+    q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, "pull", "intake", "plan", "verify", or "finalize"'); q.add_argument('pack',nargs='?',help='SYNC REQUEST path (or - for stdin), SYNC PACK path, or pack_id'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--commit',action='store_true',help='explicitly commit the verified canonical state'); q.add_argument('--push',action='store_true',help='explicitly push an already verified SYNC commit'); q.add_argument('--message',help='custom commit message; valid only with --commit'); q.add_argument('--plan',action='store_true',help='plan the bound pack after intake/pull'); q.add_argument('--issue',type=int,help='select one GitHub transport Issue; valid only with sync pull')
     q=sp.add_parser('bootstrap'); q.add_argument('--budget',choices=['small','medium','large'],default='medium')
     sp.add_parser('prepare-pr')
     args=p.parse_args(argv)
@@ -75,8 +76,20 @@ def main(argv=None):
     elif args.cmd=='task':
         out,_=task(root,args.target,args.mode,args.budget,False); print(out)
     elif args.cmd=='sync':
-        if args.plan and args.target != 'intake': p.error('--plan is valid only with sync intake')
-        if args.target=='intake':
+        if args.plan and args.target not in {'intake','pull'}: p.error('--plan is valid only with sync intake/pull')
+        if args.issue is not None and args.target != 'pull': p.error('--issue is valid only with sync pull')
+        if args.target=='pull':
+            if args.pack or args.commit or args.push or args.message is not None: p.error('sync pull accepts only --plan and --issue NUMBER')
+            try:
+                report=pull_sync(root,plan=args.plan,issue_number=args.issue)
+                print(f'Repository: {report["repository"]}\nStatus: {report["status"]}')
+                for warning in report.get('warnings', []): print(f'Warning: {warning}')
+                if report['status']!='no_pending':
+                    print(f'Issue: {report["transport"]["issue_number"]}\nPack: {report["pack_id"]}\nPath: {report["pack_path"]}\nBase: {report["base_commit"]}\nAcknowledgement: local_only')
+                    if args.plan: print(f'Plan: {report["plan_result"]}')
+            except SyncPullError as exc:
+                print(f'sync pull failed: {exc}',file=sys.stderr); sys.exit(exc.exit_code)
+        elif args.target=='intake':
             if not args.pack: p.error('project sync intake requires <request-path|->')
             if args.commit or args.push or args.message is not None: p.error('sync intake does not accept finalize options')
             try:

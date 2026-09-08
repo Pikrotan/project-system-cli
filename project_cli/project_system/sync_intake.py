@@ -91,8 +91,8 @@ def _intake_lock(root):
         lock.unlink()
 
 
-def _bound_pack(request, request_hash, project_id, head, pack_id, timestamp):
-    return {
+def _bound_pack(request, request_hash, project_id, head, pack_id, timestamp, transport=None):
+    pack = {
         'schema_version': 1,
         'pack_id': pack_id,
         'project_id': project_id,
@@ -106,18 +106,22 @@ def _bound_pack(request, request_hash, project_id, head, pack_id, timestamp):
             'intake_at': timestamp,
         },
     }
+    if transport is not None:
+        pack['provenance']['transport'] = deepcopy(transport)
+    return pack
 
 
 def _pack_bytes(pack):
     return yaml.safe_dump(pack, sort_keys=False, allow_unicode=True).encode('utf-8')
 
 
-def _find_reusable(root, request, request_hash, project_id, head):
+def intake_bindings(root):
+    """Read validated inbox artifacts without creating reports or directories."""
     inbox = _safe_local_path(root, 'inbox/sync')
     pack_ids = set()
-    matches = []
+    bindings = []
     if not inbox.exists():
-        return None, pack_ids
+        return bindings
     for current, directories, files in os.walk(inbox, followlinks=False):
         for name in directories + files:
             _safe_local_path(root, (Path(current) / name).relative_to(root))
@@ -130,32 +134,44 @@ def _find_reusable(root, request, request_hash, project_id, head):
             if pack['pack_id'] in pack_ids:
                 raise SyncIntakeError(f'duplicate pack_id in inbox: {pack["pack_id"]}')
             pack_ids.add(pack['pack_id'])
-            provenance = pack.get('provenance', {})
-            if provenance.get('request_id') != request['request_id']:
-                continue
-            if provenance['request_sha256'] != request_hash:
-                raise SyncIntakeError('request_id already used with different bytes; use a new request_id')
-            if pack['project_id'] != project_id:
-                raise SyncIntakeError('request_id already bound to a different project in this inbox')
-            expected = _bound_pack(
-                request, request_hash, project_id, pack['base_commit'],
-                pack['pack_id'], pack['created_at'],
-            )
-            if pack != expected or raw != _pack_bytes(expected):
-                raise SyncIntakeError('existing intake pack was modified; refusing reuse')
-            if not LOCAL_PACK_ID.fullmatch(pack['pack_id']) or path != inbox / f'{pack["pack_id"]}.yaml':
-                raise SyncIntakeError('existing intake pack has inconsistent filename/identity')
-            # Intake reports are derived; if present, also enforce the recorded byte hash.
-            report_path = _safe_local_path(root, f'.generated/sync/{pack["pack_id"]}/intake.json')
-            if report_path.exists():
-                previous, _ = load_sync_bytes(report_path.read_bytes(), 'intake report')
-                if previous.get('pack_sha256') != sha256(raw).hexdigest():
-                    raise SyncIntakeError('existing pack differs from its intake report hash')
-            if pack['base_commit'] == head:
-                matches.append((path, pack, raw))
+            bindings.append((path, pack, raw))
+    return bindings
+
+
+def _find_reusable(root, request, request_hash, project_id, head, transport=None):
+    inbox = _safe_local_path(root, 'inbox/sync')
+    bindings = intake_bindings(root)
+    matches = []
+    for path, pack, raw in bindings:
+        provenance = pack.get('provenance', {})
+        if provenance.get('request_id') != request['request_id']:
+            continue
+        if provenance['request_sha256'] != request_hash:
+            raise SyncIntakeError('request_id already used with different bytes; use a new request_id')
+        if pack['project_id'] != project_id:
+            raise SyncIntakeError('request_id already bound to a different project in this inbox')
+        existing_transport = provenance.get('transport')
+        if transport is not None and existing_transport != transport:
+            raise SyncIntakeError('request_id already bound to a different or changed transport')
+        expected = _bound_pack(
+            request, request_hash, project_id, pack['base_commit'],
+            pack['pack_id'], pack['created_at'], existing_transport,
+        )
+        if pack != expected or raw != _pack_bytes(expected):
+            raise SyncIntakeError('existing intake pack was modified; refusing reuse')
+        if not LOCAL_PACK_ID.fullmatch(pack['pack_id']) or path != inbox / f'{pack["pack_id"]}.yaml':
+            raise SyncIntakeError('existing intake pack has inconsistent filename/identity')
+        # Intake reports are derived; if present, also enforce the recorded byte hash.
+        report_path = _safe_local_path(root, f'.generated/sync/{pack["pack_id"]}/intake.json')
+        if report_path.exists():
+            previous, _ = load_sync_bytes(report_path.read_bytes(), 'intake report')
+            if previous.get('pack_sha256') != sha256(raw).hexdigest():
+                raise SyncIntakeError('existing pack differs from its intake report hash')
+        if pack['base_commit'] == head:
+            matches.append((path, pack, raw))
     if len(matches) > 1:
         raise SyncIntakeError('duplicate request binding at the same HEAD')
-    return matches[0] if matches else None, pack_ids
+    return matches[0] if matches else None, {pack['pack_id'] for _, pack, _ in bindings}
 
 
 def _new_pack_id(now):
@@ -164,7 +180,7 @@ def _new_pack_id(now):
 
 def _check_report_paths(root, pack_id):
     output = _safe_local_path(root, f'.generated/sync/{pack_id}')
-    for name in ('intake.json', 'intake.md', 'plan.json', 'manifest.json', 'context.md'):
+    for name in ('intake.json', 'intake.md', 'plan.json', 'manifest.json', 'context.md', 'pull.json', 'pull.md'):
         target = _safe_local_path(root, f'.generated/sync/{pack_id}/{name}')
         if target.exists() and not target.is_file():
             raise SyncIntakeError(f'generated output is not a regular file: {target}')
@@ -190,25 +206,28 @@ def _write_intake_report(root, report):
         *[f'- Warning: {warning}' for warning in report['warnings']],
         *[f'- Error: {error}' for error in report['errors']], '',
     ]
+    if report.get('transport'):
+        lines += ['## Transport provenance', '', '```json',
+                  json.dumps(report['transport'], indent=2, ensure_ascii=False), '```', '']
     _write_output(output, 'intake.md', '\n'.join(lines))
 
 
-def intake_sync(root, selector, *, plan=False, stdin=None):
+def intake_sync(root, selector, *, plan=False, stdin=None, transport=None):
     """Validate first, exclusively create/reuse an immutable pack, optionally plan."""
     try:
-        return _intake_sync(Path(root).resolve(), selector, plan=plan, stdin=stdin)
+        return _intake_sync(Path(root).resolve(), selector, plan=plan, stdin=stdin, transport=transport)
     except SyncIntakeError:
         raise
     except (SyncPlanError, OSError, ValueError, TypeError) as exc:
         raise SyncIntakeError(str(exc)) from exc
 
 
-def _intake_sync(root, selector, *, plan, stdin):
+def _intake_sync(root, selector, *, plan, stdin, transport=None):
     request, request_hash = _read_request(selector, stdin)
     project_id = load_yaml(root / 'project.yaml').get('project', {}).get('id')
     head = _git_head(root)
     with _intake_lock(root):
-        existing, used_ids = _find_reusable(root, request, request_hash, project_id, head)
+        existing, used_ids = _find_reusable(root, request, request_hash, project_id, head, transport)
         now = datetime.now(timezone.utc)
         reused = existing is not None
         for _ in range(32):
@@ -222,7 +241,7 @@ def _intake_sync(root, selector, *, plan, stdin):
                 output = _check_report_paths(root, pack_id)
                 if pack_id in used_ids or path.exists() or output.exists():
                     continue
-                pack = _bound_pack(request, request_hash, project_id, head, pack_id, now.isoformat())
+                pack = _bound_pack(request, request_hash, project_id, head, pack_id, now.isoformat(), transport)
                 raw = _pack_bytes(pack)
             if len(raw) > MAX_SYNC_PACK_BYTES:
                 raise SyncIntakeError('bound pack exceeds the SYNC PACK size limit')
@@ -261,6 +280,8 @@ def _intake_sync(root, selector, *, plan, stdin):
             'allowed_write_count': len(preview['allowed_write_set']),
             'warnings': preview['warnings'], 'errors': [],
         }
+        if pack['provenance'].get('transport'):
+            report['transport'] = deepcopy(pack['provenance']['transport'])
         _write_intake_report(root, report)
         if plan:
             try:

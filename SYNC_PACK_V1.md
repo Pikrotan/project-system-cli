@@ -144,4 +144,6 @@ Successful verification records a SHA-256 fingerprint of the exact verified cano
 
 The finalization state machine is `verified → prepared → committed → pushed`. Reports include pack/base/fingerprint identity, branch/upstream, verified and staged paths, requested operations, commit SHA/message/paths, push outcome, warnings, errors, and the human semantic-review reminder.
 
+For GitHub Issue transport in CLI 0.7.0, `committed` alone is nonterminal and reported as `awaiting_push`. Successful push publishes a durable completed binding beneath the worktree-specific Git administrative directory and removes the active inbox pack. No-op/rejected/abandoned transport requests require the explicit `--complete --outcome ... --reason ...` contract. Direct-intake behavior remains compatible. See `SYNC_TERMINAL_V1.md`.
+
 Finalization reuses exit code `3` for integrity or stale-verification failures and `4` for repository/scope/preflight violations. Exit code `6` denotes staging or commit failure; exit code `7` denotes push precondition or push-command failure. Exit code `5` remains reserved for Phase 2 canonical validation failure.

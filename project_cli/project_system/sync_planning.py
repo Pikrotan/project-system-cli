@@ -290,6 +290,14 @@ def _change_shape(change):
 
 
 def _scan_duplicate_pack_id(root, pack_path, pack_id):
+    # Import lazily to avoid the binding loader/planner import cycle.
+    from .sync_bindings import SyncBindingError, completed_binding
+    try:
+        archived = completed_binding(root, pack_id)
+    except SyncBindingError as exc:
+        raise SyncPlanError(str(exc)) from exc
+    if archived is not None:
+        raise SyncPlanError(f'pack_id {pack_id} is already terminally completed')
     inbox = root / 'inbox' / 'sync'
     if not inbox.exists():
         return

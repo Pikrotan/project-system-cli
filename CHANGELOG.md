@@ -1,5 +1,15 @@
 # Changelog
 
+## CLI 0.7.0 — 2026-09-09
+- Add Durable Terminal SYNC Binding v1: exact completed pack bytes and an integrity-sealed binding are stored beneath the worktree-specific Git administrative directory, outside the working tree and independently of disposable `.generated/**` reports.
+- Add one active/completed binding loader for pack/request/Issue collision detection, GitHub pull idempotency, transport drift checks, intake reuse boundaries and future queue consumers.
+- Make GitHub transport commit-only finalization remain active with `transport_state: awaiting_push`; archive and remove the inbox pack only after a proven successful push, including safe retry after a commit succeeded but push failed.
+- Add explicit `project sync finalize <PACK> --complete --outcome reviewed-no-change|rejected|abandoned --reason ...` terminal actions. Reviewed no-change requires passed verification; rejected/abandoned require an intact unchanged transport and a clean canonical baseline.
+- Publish completed records exclusively and crash-safely, detect active/archive mismatches and transaction tampering, and recover an identical duplicate left by a crash after archive publication but before inbox cleanup.
+- Preserve completed GitHub Issue/request identity across HEAD changes and `.generated` deletion; unchanged Issues remain processed, while body/title/author/URL/update-time drift and request identity collisions remain blocking.
+- Add audit-only `project sync migrate-bindings` and explicit `--apply`, archiving only legacy GitHub transport records with integrity-checked verification/finalization and locally proven pushed commit/upstream state. Ambiguous, prepared, unverified and direct-intake records are not guessed.
+- Preserve direct intake and all 0.6.0 commands. No watcher, polling, Task Scheduler, background process, notification, semantic executor, Issue mutation, implicit commit or automatic push is added.
+
 ## CLI 0.6.0 — 2026-09-07
 - Add universal `project sync pull` and `project sync pull --plan`, deriving the GitHub repository from origin and using local gh GET calls for transport/authentication without storing tokens.
 - Accept only open Issues with the exact `[SYNC REQUEST]` title prefix and an explicitly allowlisted creator; support an optional expected-repository pin and fail closed without opt-in policy.

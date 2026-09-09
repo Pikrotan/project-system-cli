@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-system.local/schemas/sync-terminal-binding-v1.schema.json",
+  "title": "Project System durable terminal SYNC binding v1",
+  "type": "object",
+  "required": ["schema_version", "record_type", "pack_id", "pack_sha256", "project_id", "request_id", "request_sha256", "base_commit", "original_pack_path", "transport", "terminal", "integrity"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "record_type": {"const": "completed_sync_binding"},
+    "pack_id": {"type": "string", "pattern": "^SYNC-[0-9]{8}-[0-9a-f]{8}$"},
+    "pack_sha256": {"$ref": "#/$defs/sha256"},
+    "project_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+    "request_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "request_sha256": {"$ref": "#/$defs/sha256"},
+    "base_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "original_pack_path": {"type": "string", "pattern": "^inbox/sync/SYNC-[0-9]{8}-[0-9a-f]{8}\\.yaml$"},
+    "transport": {"$ref": "sync-pack-v1.schema.json#/$defs/github_issue_transport"},
+    "terminal": {
+      "type": "object",
+      "required": ["outcome", "completed_at", "authorization", "reason", "verification_fingerprint", "commit_sha", "verified_canonical_paths", "push_proof"],
+      "properties": {
+        "outcome": {"enum": ["pushed", "reviewed-no-change", "rejected", "abandoned"]},
+        "completed_at": {"type": "string", "format": "date-time"},
+        "authorization": {"const": "explicit_cli"},
+        "reason": {"type": ["string", "null"]},
+        "verification_fingerprint": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "commit_sha": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{40}$"}, {"type": "null"}]},
+        "verified_canonical_paths": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "push_proof": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "required": ["remote", "upstream", "commit_sha"],
+              "properties": {
+                "remote": {"type": "string", "minLength": 1},
+                "upstream": {"type": "string", "minLength": 1},
+                "commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {"properties": {"outcome": {"const": "pushed"}}},
+          "then": {
+            "properties": {
+              "reason": {"type": "null"},
+              "verification_fingerprint": {"$ref": "#/$defs/sha256"},
+              "commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+              "verified_canonical_paths": {"type": "array", "minItems": 1, "items": {"type": "string"}, "uniqueItems": true},
+              "push_proof": {"type": "object"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"outcome": {"const": "reviewed-no-change"}}},
+          "then": {
+            "properties": {
+              "reason": {"type": "string", "minLength": 1},
+              "verification_fingerprint": {"$ref": "#/$defs/sha256"},
+              "commit_sha": {"type": "null"},
+              "verified_canonical_paths": {"type": "array", "maxItems": 0},
+              "push_proof": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"outcome": {"enum": ["rejected", "abandoned"]}}},
+          "then": {
+            "properties": {
+              "reason": {"type": "string", "minLength": 1},
+              "verification_fingerprint": {"type": "null"},
+              "commit_sha": {"type": "null"},
+              "verified_canonical_paths": {"type": "array", "maxItems": 0},
+              "push_proof": {"type": "null"}
+            }
+          }
+        }
+      ]
+    },
+    "integrity": {
+      "type": "object",
+      "required": ["algorithm", "payload_sha256"],
+      "properties": {
+        "algorithm": {"const": "sha256"},
+        "payload_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

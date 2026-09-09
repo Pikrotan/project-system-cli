@@ -15,6 +15,7 @@ from .sync_intake import (
     SyncIntakeError, _check_report_paths, _find_reusable, _read_request,
     intake_bindings, intake_sync,
 )
+from .sync_bindings import SyncBindingError
 from .sync_planning import (
     MAX_SYNC_PACK_BYTES, SyncPlanError, _git_head, _write_output,
     load_sync_bytes, plan_sync, sync_format_checker,
@@ -185,7 +186,8 @@ def inspect_pull(root, issue_number=None):
     project_id, policy = pull_policy(root, repository)
     head = _git_head(root)
     bindings = {}
-    for path, pack, raw in intake_bindings(root):
+    for binding in intake_bindings(root):
+        path, pack, raw = tuple(binding)
         transport = pack.get('provenance', {}).get('transport')
         if not transport:
             continue
@@ -194,7 +196,7 @@ def inspect_pull(root, issue_number=None):
         number = transport['issue_number']
         if number in bindings:
             raise SyncPullError(f'duplicate stored transport binding for issue #{number}')
-        bindings[number] = (path, pack, raw)
+        bindings[number] = binding
     if issue_number is not None and (type(issue_number) is not int or issue_number <= 0):
         raise SyncPullError('--issue must be a positive integer')
     # Explicit selection still discovers marked open candidates so duplicate request
@@ -217,15 +219,19 @@ def inspect_pull(root, issue_number=None):
                 raise SyncPullError('GitHub response has a mismatched issue number')
             candidate = issue_request(issue, repository, policy['allowed_authors'], require_open=number not in bindings)
             if number in bindings:
-                path, pack, raw = bindings[number]
+                binding = bindings[number]
+                path, pack, raw = tuple(binding)
                 if candidate['transport'] != pack['provenance']['transport']:
                     raise SyncPullError('transport metadata/body/title changed')
-                existing, _ = _find_reusable(root, candidate['request'], candidate['transport']['request_sha256'],
-                                             project_id, pack['base_commit'], candidate['transport'])
-                if existing is None or existing[0] != path:
-                    raise SyncPullError('stored transport binding cannot be verified')
-                _check_report_paths(root, pack['pack_id'])
-                candidate['binding'] = existing
+                if binding.state == 'completed':
+                    candidate['binding'] = binding
+                else:
+                    existing, _ = _find_reusable(root, candidate['request'], candidate['transport']['request_sha256'],
+                                                 project_id, pack['base_commit'], candidate['transport'])
+                    if existing is None or existing[0] != path:
+                        raise SyncPullError('stored transport binding cannot be verified')
+                    _check_report_paths(root, pack['pack_id'])
+                    candidate['binding'] = binding
         except (SyncPullError, SyncIntakeError, SyncPlanError) as exc:
             if number == issue_number:
                 if number in bindings:
@@ -237,7 +243,8 @@ def inspect_pull(root, issue_number=None):
             raise
         candidates[number] = candidate
     request_issues = {}
-    for number, (_, pack, _) in bindings.items():
+    for number, binding in bindings.items():
+        pack = binding.pack
         request_issues.setdefault(pack['provenance']['request_id'], set()).add(number)
     for number, candidate in candidates.items():
         request_issues.setdefault(candidate['request']['request_id'], set()).add(number)
@@ -268,7 +275,7 @@ def pull_sync(root, *, plan=False, issue_number=None):
         return _pull_sync(Path(root).resolve(), plan=plan, issue_number=issue_number)
     except SyncPullError:
         raise
-    except (SyncIntakeError, SyncPlanError, OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as exc:
+    except (SyncIntakeError, SyncBindingError, SyncPlanError, OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as exc:
         raise SyncPullError(str(exc)) from exc
 
 
@@ -299,19 +306,27 @@ def _pull_sync(root, *, plan, issue_number):
         pack_id, base_commit = intake['pack_id'], intake['base_commit']
         pack_hash = intake['pack_sha256']
     else:
-        path, pack, raw = candidate['binding']
+        binding = candidate['binding']
+        path, pack, raw = tuple(binding)
         pack_id, base_commit = pack['pack_id'], pack['base_commit']
-        pack_hash, status = sha256(raw).hexdigest(), 'already_processed'
+        pack_hash = sha256(raw).hexdigest()
+        status = 'completed' if binding.state == 'completed' else 'already_processed'
         if plan:
+            if binding.state == 'completed':
+                raise SyncPullError('completed transport pack cannot be replanned or semantically applied again')
             plan_sync(root, path)  # A stale binding is never silently rebound by pull.
     refresh()
     receipt = {
         'schema_version': 1, 'acknowledgement': 'local_only', 'status': 'processed',
-        'pack_id': pack_id, 'pack_path': path.relative_to(root).as_posix(),
+        'pack_id': pack_id,
+        'pack_path': (binding.original_pack_path if candidate['binding'] is not None and binding.state == 'completed'
+                      else path.relative_to(root).as_posix()),
         'pack_sha256': pack_hash, 'base_commit': base_commit, 'project_id': inspection['project_id'],
         'request_id': candidate['request']['request_id'], 'transport': transport,
         'remote_action': 'none', 'warnings': inspection['warnings'],
     }
+    if candidate['binding'] is not None and binding.state == 'completed':
+        receipt['terminal_outcome'] = binding.terminal['terminal']['outcome']
     output = _check_report_paths(root, pack_id)
     output.mkdir(parents=True, exist_ok=True)
     _write_output(output, 'pull.json', json.dumps(receipt, indent=2, sort_keys=True) + '\n')

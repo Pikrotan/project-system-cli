@@ -1,21 +1,28 @@
 # Distribution Manifest
 
 - Template version: 1.1.0 Stable
-- CLI version: 0.6.0
+- CLI version: 0.7.0
 - Schema version: 1
 - Narrative templates: 34
 - Atomic object types: 12
 - Blueprint modules: 13
-- JSON schemas: 16
+- JSON schemas: 17
 - Machine assets: packaged in `project_cli/project_system_assets/` for source and wheel installs
 - SYNC PACK assets: v1 contract document and JSON schema included in release artifacts
 - SYNC REQUEST assets: Bridge v1 contract document and shared-definition JSON schema included in release/package assets
 - SYNC pull assets: Bridge v2 contract, transport runtime and optional policy/provenance schemas included in package assets
+- Terminal SYNC assets: durable binding v1 contract/schema, Git-admin completed store, migration runtime and crash-safe terminalization included in package assets
 - Adversarial hardening: path/symlink safety, transactional module enable rollback, target-first atomic context budgeting, 8-char random IDs, strict frontmatter parsing, symmetric blueprint conflicts
 
 ## MVP CLI commands
 
-`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including `sync pull`, `sync intake`, `sync plan`, `sync verify`, and `sync finalize`), `bootstrap`, `prepare-pr`.
+`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including `sync pull`, `sync intake`, `sync plan`, `sync verify`, `sync finalize`, and `sync migrate-bindings`), `bootstrap`, `prepare-pr`.
+
+## Durable terminal SYNC lifecycle
+
+Version 0.7.0 moves successfully pushed GitHub transport packs from `inbox/sync/` into an immutable, worktree-local completed store beneath the Git administrative directory. Exact archived pack bytes plus a sealed versioned binding preserve processed Issue/request identity after `.generated/` is removed without dirtying the working tree. GitHub commit-only finalization remains active as `awaiting_push`; terminalization occurs only after proven push. Explicit `--complete --outcome reviewed-no-change|rejected|abandoned --reason ...` records human technical disposition without claiming cryptographic identity. `sync migrate-bindings` audits legacy 0.6 bindings and `--apply` archives only unambiguous pushed records. No watcher, background process, scheduler, canonical semantic edit, automatic stage, implicit commit, Issue mutation or release action is included. See `SYNC_TERMINAL_V1.md`.
+
+Durable terminal verification: **250 passed, 1 Windows symlink-permission skip**. Temporary wheel and sdist metadata/assets were verified at `0.7.0`; installed-wheel smoke covered GitHub commit-only `awaiting_push`, local bare-remote push terminalization, clean working-tree restoration, durable identity after `.generated` deletion, and completed-Issue reuse. All temporary build, wheel, venv, repository and test artifacts were removed. No GitHub or production-project mutation was performed.
 
 ## Bridge v2 transport
 

@@ -7,6 +7,14 @@ import subprocess
 import uuid
 
 from .sync_planning import SyncPlanError, _write_output
+from .sync_bindings import (
+    DURABLE_PACK_ID,
+    SyncBindingError,
+    build_terminal_binding,
+    load_sync_bindings,
+    terminal_status,
+    terminalize_binding,
+)
 from .sync_verification import (
     SyncVerifyError,
     _all_changed_paths,
@@ -29,6 +37,7 @@ COMMIT_EXIT = 6
 PUSH_EXIT = 7
 COMMIT_SHA_RE = re.compile(r'^[0-9a-f]{40}$')
 MAX_COMMIT_MESSAGE_CHARS = 4096
+COMPLETE_OUTCOMES = {'reviewed-no-change', 'rejected', 'abandoned'}
 
 
 class SyncFinalizeError(RuntimeError):
@@ -620,16 +629,198 @@ def _normalize_message(pack_id, message):
     return message.strip()
 
 
-def finalize_sync(root, selector, *, commit=False, push=False, message=None):
+def _selector_pack_id(selector):
+    value = str(selector)
+    if DURABLE_PACK_ID.fullmatch(value):
+        return value
+    name = Path(value).name
+    if name.endswith(('.yaml', '.yml', '.json')):
+        candidate = Path(name).stem
+        if DURABLE_PACK_ID.fullmatch(candidate):
+            return candidate
+    return None
+
+
+def _transport_snapshot_unchanged(root, pack):
+    transport = (pack.get('provenance') or {}).get('transport')
+    if not isinstance(transport, dict) or transport.get('kind') != 'github_issue':
+        return False
+    # Import lazily: pull depends on intake/planning but not finalization.
+    from .sync_pull import github_repository, gh_get, issue_request, pull_policy
+    repository = github_repository(root)
+    if repository.lower() != transport['repository'].lower():
+        raise SyncFinalizeIntegrityError('GitHub transport repository differs from current origin')
+    _, policy = pull_policy(root, repository)
+    issue = gh_get(root, f'repos/{repository}/issues/{transport["issue_number"]}')
+    current = issue_request(issue, repository, policy['allowed_authors'], require_open=False)
+    if current['transport'] != transport:
+        raise SyncFinalizeIntegrityError('GitHub transport snapshot changed after intake')
+    return True
+
+
+def _publish_terminal(root, integrity, *, outcome, reason, verification=None, report=None):
+    pack = integrity['pack']
+    raw = integrity['pack_path'].read_bytes()
+    fingerprint = verification.get('verification_fingerprint') if verification else None
+    commit_sha = report.get('commit_sha') if report else None
+    paths = verification.get('actual_changed_canonical_paths', []) if verification else []
+    push_proof = None
+    if outcome == 'pushed':
+        push_proof = {
+            'remote': report['remote'],
+            'upstream': report['upstream'],
+            'commit_sha': commit_sha,
+        }
+    try:
+        binding = build_terminal_binding(
+            pack,
+            raw,
+            outcome=outcome,
+            reason=reason,
+            verification_fingerprint=fingerprint,
+            commit_sha=commit_sha,
+            verified_paths=paths,
+            push_proof=push_proof,
+        )
+        archived = terminalize_binding(
+            root, integrity['pack_path'], pack, raw, binding,
+        )
+    except (SyncBindingError, OSError, ValueError, TypeError) as exc:
+        raise SyncFinalizeIntegrityError(f'terminalization failed: {exc}') from exc
+    return archived
+
+
+def _complete_without_commit(root, selector, outcome, reason):
+    if outcome not in COMPLETE_OUTCOMES:
+        raise SyncFinalizeIntegrityError(
+            '--outcome must be reviewed-no-change, rejected, or abandoned'
+        )
+    if not isinstance(reason, str) or not reason.strip() or '\0' in reason:
+        raise SyncFinalizeIntegrityError('--complete requires a non-empty --reason')
+    try:
+        integrity = _resolve_integrity_inputs(root, selector, require_base_head=True)
+    except SyncVerifyError as exc:
+        raise SyncFinalizeIntegrityError(str(exc)) from exc
+    if not _transport_snapshot_unchanged(root, integrity['pack']):
+        raise SyncFinalizeIntegrityError('--complete is supported only for GitHub transport packs')
+    preflight = _git_preflight(root)
+    plan = integrity['plan']
+    changes = collect_git_changes(root, plan['base_commit'])
+    scope = _scope_analysis(
+        root,
+        changes,
+        plan['allowed_write_set'],
+        integrity['pack_path'],
+        plan['ignored_untracked_baseline'],
+    )
+    if scope['actual_changed_paths'] or scope['partially_staged_paths'] or scope['ignored_untracked_drift']:
+        problems = sorted(set(
+            scope['actual_changed_paths']
+            + scope['partially_staged_paths']
+            + scope['ignored_untracked_drift']
+        ))
+        raise SyncFinalizeScopeError(
+            'non-commit completion requires a clean canonical baseline: ' + ', '.join(problems)
+        )
+    verification = None
+    if outcome == 'reviewed-no-change':
+        verification = _load_verification(integrity['output'], plan)
+        _current_verified_state(root, integrity, verification)
+        if verification['actual_changed_canonical_paths']:
+            raise SyncFinalizeScopeError('reviewed-no-change cannot complete canonical edits')
+    pseudo_verification = verification or {
+        'actual_changed_canonical_paths': [],
+        'verification_fingerprint': None,
+    }
+    report = _base_report(
+        integrity, pseudo_verification, preflight, False, False, None,
+    )
+    archived = _publish_terminal(
+        root,
+        integrity,
+        outcome=outcome,
+        reason=reason.strip(),
+        verification=verification,
+        report=report,
+    )
+    report.update({
+        'state': 'completed',
+        'terminal_outcome': outcome,
+        'terminal_reason': reason.strip(),
+        'transport_state': 'completed',
+        'archive_location': str(archived.path.parent),
+    })
+    _write_reports(integrity['output'], report)
+    return integrity['output'], report
+
+
+def _completed_response(root, selector, *, complete, outcome, reason, commit, push):
+    pack_id = _selector_pack_id(selector)
+    if not pack_id:
+        return None
+    try:
+        binding = next(
+            (item for item in load_sync_bindings(root)
+             if item.state == 'completed' and item.pack['pack_id'] == pack_id),
+            None,
+        )
+    except SyncBindingError as exc:
+        raise SyncFinalizeIntegrityError(str(exc)) from exc
+    if binding is None:
+        return None
+    if binding.recoverable_active_path is not None:
+        try:
+            binding = terminalize_binding(
+                root,
+                binding.recoverable_active_path,
+                binding.pack,
+                binding.raw,
+                binding.terminal,
+            )
+        except SyncBindingError as exc:
+            raise SyncFinalizeIntegrityError(f'terminal cleanup recovery failed: {exc}') from exc
+    terminal = binding.terminal['terminal']
+    if complete and (outcome != terminal['outcome'] or reason.strip() != (terminal.get('reason') or '')):
+        raise SyncFinalizeIntegrityError('pack is already completed with a different terminal outcome')
+    value = terminal_status(binding)
+    value.update({
+        'state': 'completed',
+        'commit_result': 'already_committed' if terminal.get('commit_sha') else 'not_applicable',
+        'push_result': 'already_synchronized' if terminal['outcome'] == 'pushed' else 'not_applicable',
+        'terminal_outcome': terminal['outcome'],
+        'archive_location': str(binding.path.parent),
+    })
+    if push and terminal['outcome'] != 'pushed':
+        raise SyncPushError('completed binding does not contain pushed transport proof')
+    return binding.path.parent, value
+
+
+def finalize_sync(root, selector, *, commit=False, push=False, message=None,
+                  complete=False, outcome=None, reason=None):
     """Prepare, commit, and explicitly push one previously verified SYNC state."""
     root = Path(root).resolve()
+    if complete and (commit or push or message is not None):
+        raise SyncFinalizeIntegrityError('--complete is incompatible with --commit, --push, and --message')
+    if not complete and (outcome is not None or reason is not None):
+        raise SyncFinalizeIntegrityError('--outcome and --reason require --complete')
+    if complete and (outcome is None or reason is None):
+        raise SyncFinalizeIntegrityError('--complete requires --outcome and --reason')
     if message is not None and not commit:
         raise SyncCommitError('--message requires --commit')
+    completed = _completed_response(
+        root, selector, complete=complete, outcome=outcome,
+        reason=reason or '', commit=commit, push=push,
+    )
+    if completed is not None:
+        return completed
+    if complete:
+        return _complete_without_commit(root, selector, outcome, reason)
     try:
         integrity = _resolve_integrity_inputs(root, selector, require_base_head=False)
     except SyncVerifyError as exc:
         raise SyncFinalizeIntegrityError(str(exc)) from exc
     verification = _load_verification(integrity['output'], integrity['plan'])
+    github_transport = _transport_snapshot_unchanged(root, integrity['pack'])
     previous = _load_previous_finalization(integrity['output'])
     normalized_message = _normalize_message(integrity['plan']['pack_id'], message)
     try:
@@ -693,8 +884,29 @@ def finalize_sync(root, selector, *, commit=False, push=False, message=None):
         elif not report.get('commit_sha'):
             report['state'] = 'prepared'
 
+        if github_transport and report.get('commit_sha') and not push:
+            report['transport_state'] = 'awaiting_push'
+
         if push:
             _push(root, report, verification, preflight)
+
+        if github_transport and push and report.get('push_result') in {'pushed', 'already_synchronized'}:
+            # Re-fetch after Git side effects before publishing immutable completion.
+            _transport_snapshot_unchanged(root, integrity['pack'])
+            archived = _publish_terminal(
+                root,
+                integrity,
+                outcome='pushed',
+                reason=None,
+                verification=verification,
+                report=report,
+            )
+            report.update({
+                'state': 'completed',
+                'terminal_outcome': 'pushed',
+                'transport_state': 'completed',
+                'archive_location': str(archived.path.parent),
+            })
 
         _write_reports(integrity['output'], report)
         return integrity['output'], report

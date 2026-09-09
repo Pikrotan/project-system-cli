@@ -20,6 +20,7 @@ from .sync_planning import (
     _load_pack_text, _validate_pack_schema, _write_output,
     load_sync_bytes, plan_sync, prepare_sync_plan, sync_format_checker,
 )
+from .sync_bindings import SyncBindingError, load_sync_bindings
 from .utils import distribution_root, load_yaml
 
 
@@ -116,33 +117,19 @@ def _pack_bytes(pack):
 
 
 def intake_bindings(root):
-    """Read validated inbox artifacts without creating reports or directories."""
-    inbox = _safe_local_path(root, 'inbox/sync')
-    pack_ids = set()
-    bindings = []
-    if not inbox.exists():
-        return bindings
-    for current, directories, files in os.walk(inbox, followlinks=False):
-        for name in directories + files:
-            _safe_local_path(root, (Path(current) / name).relative_to(root))
-        for name in sorted(files):
-            path = Path(current) / name
-            if path.suffix.lower() not in PACK_SUFFIXES:
-                continue
-            pack, _, raw = _load_pack_text(path)
-            _validate_pack_schema(pack)
-            if pack['pack_id'] in pack_ids:
-                raise SyncIntakeError(f'duplicate pack_id in inbox: {pack["pack_id"]}')
-            pack_ids.add(pack['pack_id'])
-            bindings.append((path, pack, raw))
-    return bindings
+    """Read the unified active/completed binding layer without writing output."""
+    try:
+        return load_sync_bindings(root)
+    except SyncBindingError as exc:
+        raise SyncIntakeError(str(exc)) from exc
 
 
 def _find_reusable(root, request, request_hash, project_id, head, transport=None):
     inbox = _safe_local_path(root, 'inbox/sync')
     bindings = intake_bindings(root)
     matches = []
-    for path, pack, raw in bindings:
+    for binding in bindings:
+        path, pack, raw = tuple(binding)
         provenance = pack.get('provenance', {})
         if provenance.get('request_id') != request['request_id']:
             continue
@@ -153,6 +140,12 @@ def _find_reusable(root, request, request_hash, project_id, head, transport=None
         existing_transport = provenance.get('transport')
         if transport is not None and existing_transport != transport:
             raise SyncIntakeError('request_id already bound to a different or changed transport')
+        if binding.state == 'completed':
+            # Direct intake keeps its independent new-HEAD semantics, but it may
+            # not silently acquire/reuse a completed GitHub transport identity.
+            if transport is None:
+                raise SyncIntakeError('request_id is already completed through GitHub transport')
+            continue
         expected = _bound_pack(
             request, request_hash, project_id, pack['base_commit'],
             pack['pack_id'], pack['created_at'], existing_transport,
@@ -171,7 +164,7 @@ def _find_reusable(root, request, request_hash, project_id, head, transport=None
             matches.append((path, pack, raw))
     if len(matches) > 1:
         raise SyncIntakeError('duplicate request binding at the same HEAD')
-    return matches[0] if matches else None, {pack['pack_id'] for _, pack, _ in bindings}
+    return matches[0] if matches else None, {binding.pack['pack_id'] for binding in bindings}
 
 
 def _new_pack_id(now):
@@ -218,7 +211,7 @@ def intake_sync(root, selector, *, plan=False, stdin=None, transport=None):
         return _intake_sync(Path(root).resolve(), selector, plan=plan, stdin=stdin, transport=transport)
     except SyncIntakeError:
         raise
-    except (SyncPlanError, OSError, ValueError, TypeError) as exc:
+    except (SyncPlanError, SyncBindingError, OSError, ValueError, TypeError) as exc:
         raise SyncIntakeError(str(exc)) from exc
 
 

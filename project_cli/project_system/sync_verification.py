@@ -893,6 +893,17 @@ def _fatal_validation(issues):
 def verify_sync(root, selector):
     """Verify externally applied SYNC edits without making semantic decisions."""
     root = Path(root).resolve()
+    from .sync_bindings import SyncBindingError, completed_binding, DURABLE_PACK_ID
+    value = str(selector)
+    pack_id = value if DURABLE_PACK_ID.fullmatch(value) else None
+    if pack_id:
+        try:
+            if completed_binding(root, pack_id) is not None:
+                raise SyncIntegrityError(
+                    'pack is terminally completed and cannot be verified or semantically applied again'
+                )
+        except SyncBindingError as exc:
+            raise SyncIntegrityError(str(exc)) from exc
     integrity = _resolve_integrity_inputs(root, selector)
     plan = integrity['plan']
 

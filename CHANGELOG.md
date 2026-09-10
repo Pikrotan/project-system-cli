@@ -1,5 +1,15 @@
 # Changelog
 
+## CLI 0.9.0 — 2026-09-10
+- Add the Stage 2A persistent foreground runtime through `project sync watch`, retaining `project sync watch --once` as the unchanged bounded-cycle command and supporting a validated `--interval` of 60–3600 seconds (120 seconds by default).
+- Reuse the 0.8 pickup core for every cycle, preserving the single-active-request model, oldest-first fail-closed queue, immutable intake, shared intake lock, completed lifecycle tolerance, and request-identity drift protection without duplicating transport or queue logic.
+- Hold a separate project/worktree watcher lock using crash-released OS file-lock primitives, preventing concurrent persistent watchers while continuing to serialize automatic and manual intake through the existing intake lock.
+- Write disposable, atomic `.generated/sync/auto/state.json` runtime state and a sanitized append-only `events.jsonl` operational log. Durable processed identity remains exclusively in the 0.7+ binding layer.
+- Apply bounded exponential backoff to temporary transport failures and operational dirty/awaiting-push/transaction blocks, capped at 1800 seconds, and reset to the configured interval after normal cycles. Configuration, malformed-head and integrity/identity conflicts stop fail-closed for human intervention.
+- Handle Ctrl+C as a clean foreground shutdown with stopped state, event logging and watcher-lock release. The watcher performs no semantic edits, verification, finalization, canonical writes, staging, commit, push, arbitrary command execution or GitHub mutation.
+- Recover deterministically from an interrupted final `events.jsonl` append: preserve all valid complete records, normalize a valid final object without LF, discard only an invalid non-terminated tail under the watcher lock, and fail closed on interior or newline-terminated corruption. Recovery logs only sanitized tail length/hash metadata.
+- Keep Task Scheduler, autostart, background services, and automatic install/status/remove lifecycle management pending a later stage.
+
 ## CLI 0.8.0 — 2026-09-09
 - Add the OS-neutral Automatic Pickup Core and `project sync watch --once`. One invocation performs exactly one bounded queue inspection and creates/plans at most one immutable SYNC pack; it is not a persistent watcher.
 - Reuse Bridge v2 repository discovery, GitHub GET transport, marker/author policy, strict request extraction/validation, transport drift detection, Bridge v1 intake, Phase 1 planning, and the 0.7 active/completed binding authority without semantic duplication.

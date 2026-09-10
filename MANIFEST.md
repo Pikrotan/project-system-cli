@@ -1,7 +1,7 @@
 # Distribution Manifest
 
 - Template version: 1.1.0 Stable
-- CLI version: 0.8.0
+- CLI version: 0.9.0
 - Schema version: 1
 - Narrative templates: 34
 - Atomic object types: 12
@@ -13,11 +13,18 @@
 - SYNC pull assets: Bridge v2 contract, transport runtime and optional policy/provenance schemas included in package assets
 - Terminal SYNC assets: durable binding v1 contract/schema, Git-admin completed store, migration runtime and crash-safe terminalization included in package assets
 - Automatic pickup assets: bounded-cycle contract and OS-neutral pickup runtime included in release/package assets
+- Foreground watcher assets: persistent runtime, watcher contract, lock/state/event/backoff implementation included in release/package assets
 - Adversarial hardening: path/symlink safety, transactional module enable rollback, target-first atomic context budgeting, 8-char random IDs, strict frontmatter parsing, symmetric blueprint conflicts
 
 ## MVP CLI commands
 
-`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including bounded `sync watch --once`, `sync pull`, `sync intake`, `sync plan`, `sync verify`, `sync finalize`, and `sync migrate-bindings`), `bootstrap`, `prepare-pr`.
+`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including persistent `sync watch`, bounded `sync watch --once`, `sync pull`, `sync intake`, `sync plan`, `sync verify`, `sync finalize`, and `sync migrate-bindings`), `bootstrap`, `prepare-pr`.
+
+## Persistent Foreground Watcher — Stage 2A
+
+Version 0.9.0 adds `project sync watch`, a foreground loop over the unchanged 0.8 bounded pickup core. A separate OS-level project/worktree lock prevents concurrent persistent watchers; the existing intake lock continues to coordinate pack creation with manual pull/intake. Disposable atomic state and sanitized JSONL events live under `.generated/sync/auto/`. The default interval is 120 seconds, configurable from 60 to 3600 seconds, with retryable operational backoff capped at 1800 seconds. Ctrl+C records a clean stop and releases the lock. Fatal configuration, malformed request-head and integrity/identity conflicts stop fail-closed. No scheduler, autostart, background service, semantic edit, verification, finalization, Git staging/commit/push or GitHub mutation is included. See `SYNC_WATCHER_V1.md`.
+
+Foreground watcher verification: **304 passed, 2 Windows symlink-permission skips**. Coverage includes multiple cycles without real sleeping, no-pending repetition, created-to-active single-pack behavior, exponential growth/cap/reset, retryable and fatal classifications, Ctrl+C shutdown and exit code, exclusive lock/release, atomic state, sanitized valid JSONL, crash-tail repair and fail-closed complete-record corruption, runtime symlink rejection, unchanged bounded-cycle behavior, and all Bridge/terminal regressions.
 
 ## Automatic Pickup Core — Stage 1
 

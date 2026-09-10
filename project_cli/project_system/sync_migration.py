@@ -75,6 +75,11 @@ def _classify_active(root, binding, apply):
         return {'pack_id': pack['pack_id'], 'status': 'conflict', 'detail': str(exc)}
 
 
+def classify_active_binding(root, binding):
+    """Read-only lifecycle classification shared with bounded pickup."""
+    return _classify_active(Path(root).resolve(), binding, False)
+
+
 def migrate_bindings(root, *, apply=False):
     """Audit, or explicitly archive, only deterministic legacy terminal bindings."""
     root = Path(root).resolve()

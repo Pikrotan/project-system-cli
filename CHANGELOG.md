@@ -1,5 +1,15 @@
 # Changelog
 
+## CLI 0.8.0 — 2026-09-09
+- Add the OS-neutral Automatic Pickup Core and `project sync watch --once`. One invocation performs exactly one bounded queue inspection and creates/plans at most one immutable SYNC pack; it is not a persistent watcher.
+- Reuse Bridge v2 repository discovery, GitHub GET transport, marker/author policy, strict request extraction/validation, transport drift detection, Bridge v1 intake, Phase 1 planning, and the 0.7 active/completed binding authority without semantic duplication.
+- Use a stable oldest-first queue ordered by ascending GitHub Issue number. Ordinary, unauthorized, closed and already-completed Issues are skipped; a malformed authorized head, duplicate request identity or completed transport drift blocks unattended progress rather than silently bypassing the request.
+- Add structured `created`, `processed`, `no_pending`, `blocked_active`, `blocked_awaiting_push`, `blocked_dirty`, `blocked_transaction`, `blocked_malformed`, `blocked_conflict`, `blocked_config`, and `blocked_transport` cycle results for CLI and future scheduler/state consumers.
+- Serialize automatic selection through intake/plan with manual pull and direct intake using the existing local intake lock, closing the cooperative selection-to-create race without adding a daemon lock or OS-specific scheduler behavior.
+- Keep automatic authority transport-only: the cycle may write one immutable `inbox/sync/<PACK_ID>.yaml` and derived `.generated` intake/plan/pull reports, but never edits canonical knowledge/docs, verifies, finalizes, stages, commits, pushes or mutates GitHub.
+- Preserve the 0.7 lifecycle and all older commands/configuration. Persistent polling, watcher loops, autostart/install/status/remove, Task Scheduler, notifications, services and desktop UI remain pending future stages.
+- Treat mutable lifecycle metadata of an already completed GitHub Issue (`state`, `state_reason`, `updated_at`, `closed_at`) as provenance-only during unattended reconciliation. Repository/Issue/author/title/body/request identities and their hashes remain fail-closed drift invariants, including for existing 0.7 terminal bindings.
+
 ## CLI 0.7.0 — 2026-09-09
 - Add Durable Terminal SYNC Binding v1: exact completed pack bytes and an integrity-sealed binding are stored beneath the worktree-specific Git administrative directory, outside the working tree and independently of disposable `.generated/**` reports.
 - Add one active/completed binding loader for pack/request/Issue collision detection, GitHub pull idempotency, transport drift checks, intake reuse boundaries and future queue consumers.

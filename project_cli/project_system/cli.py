@@ -18,6 +18,7 @@ from .sync_finalization import finalize_sync, SyncFinalizeError
 from .sync_intake import intake_sync, SyncIntakeError
 from .sync_pull import pull_sync, SyncPullError
 from .sync_migration import migrate_bindings, SyncMigrationError
+from .sync_pickup import BLOCKED_STATUSES, pickup_once
 
 TYPES=list(DIRS)
 
@@ -47,7 +48,7 @@ def main(argv=None):
     q=sp.add_parser('enable'); q.add_argument('module')
     q=sp.add_parser('disable'); q.add_argument('module')
     q=sp.add_parser('task'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='implement')
-    q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, "pull", "intake", "plan", "verify", "finalize", or "migrate-bindings"'); q.add_argument('pack',nargs='?',help='SYNC REQUEST path (or - for stdin), SYNC PACK path, or pack_id'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--commit',action='store_true',help='explicitly commit the verified canonical state'); q.add_argument('--push',action='store_true',help='explicitly push an already verified SYNC commit'); q.add_argument('--message',help='custom commit message; valid only with --commit'); q.add_argument('--complete',action='store_true',help='explicitly complete a non-commit GitHub transport outcome'); q.add_argument('--outcome',choices=['reviewed-no-change','rejected','abandoned'],help='terminal outcome; requires --complete'); q.add_argument('--reason',help='required human reason for --complete'); q.add_argument('--apply',action='store_true',help='apply a deterministic sync binding migration audit'); q.add_argument('--plan',action='store_true',help='plan the bound pack after intake/pull'); q.add_argument('--issue',type=int,help='select one GitHub transport Issue; valid only with sync pull')
+    q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, "watch", "pull", "intake", "plan", "verify", "finalize", or "migrate-bindings"'); q.add_argument('pack',nargs='?',help='SYNC REQUEST path (or - for stdin), SYNC PACK path, or pack_id'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--commit',action='store_true',help='explicitly commit the verified canonical state'); q.add_argument('--push',action='store_true',help='explicitly push an already verified SYNC commit'); q.add_argument('--message',help='custom commit message; valid only with --commit'); q.add_argument('--complete',action='store_true',help='explicitly complete a non-commit GitHub transport outcome'); q.add_argument('--outcome',choices=['reviewed-no-change','rejected','abandoned'],help='terminal outcome; requires --complete'); q.add_argument('--reason',help='required human reason for --complete'); q.add_argument('--apply',action='store_true',help='apply a deterministic sync binding migration audit'); q.add_argument('--plan',action='store_true',help='plan the bound pack after intake/pull'); q.add_argument('--issue',type=int,help='select one GitHub transport Issue; valid only with sync pull'); q.add_argument('--once',action='store_true',help='run exactly one bounded automatic pickup cycle; valid only with sync watch')
     q=sp.add_parser('bootstrap'); q.add_argument('--budget',choices=['small','medium','large'],default='medium')
     sp.add_parser('prepare-pr')
     args=p.parse_args(argv)
@@ -80,9 +81,20 @@ def main(argv=None):
         if args.plan and args.target not in {'intake','pull'}: p.error('--plan is valid only with sync intake/pull')
         if args.issue is not None and args.target != 'pull': p.error('--issue is valid only with sync pull')
         if args.apply and args.target != 'migrate-bindings': p.error('--apply is valid only with sync migrate-bindings')
+        if args.once and args.target != 'watch': p.error('--once is valid only with sync watch')
         if (args.complete or args.outcome is not None or args.reason is not None) and args.target != 'finalize': p.error('--complete/--outcome/--reason are valid only with sync finalize')
-        if args.target=='pull':
-            if args.pack or args.commit or args.push or args.message is not None or args.complete or args.apply: p.error('sync pull accepts only --plan and --issue NUMBER')
+        if args.target=='watch':
+            if not args.once: p.error('Stage 1 supports only project sync watch --once')
+            if args.pack or args.commit or args.push or args.message is not None or args.complete or args.outcome or args.reason or args.apply or args.plan or args.issue is not None: p.error('sync watch --once does not accept other sync options')
+            report=pickup_once(root)
+            print(f'Repository: {report.get("repository") or "unknown"}\nStatus: {report["status"]}')
+            if report.get('reason'): print(f'Reason: {report["reason"]}')
+            if report.get('issue_number') is not None: print(f'Issue: {report["issue_number"]}')
+            if report.get('pack_id'): print(f'Pack: {report["pack_id"]}')
+            if report.get('plan'): print(f'Plan: {report["plan"]}')
+            if report['status'] in BLOCKED_STATUSES: sys.exit(3)
+        elif args.target=='pull':
+            if args.pack or args.commit or args.push or args.message is not None or args.complete or args.apply or args.once: p.error('sync pull accepts only --plan and --issue NUMBER')
             try:
                 report=pull_sync(root,plan=args.plan,issue_number=args.issue)
                 print(f'Repository: {report["repository"]}\nStatus: {report["status"]}')
@@ -94,7 +106,7 @@ def main(argv=None):
                 print(f'sync pull failed: {exc}',file=sys.stderr); sys.exit(exc.exit_code)
         elif args.target=='intake':
             if not args.pack: p.error('project sync intake requires <request-path|->')
-            if args.commit or args.push or args.message is not None or args.complete or args.apply: p.error('sync intake does not accept finalize options')
+            if args.commit or args.push or args.message is not None or args.complete or args.apply or args.once: p.error('sync intake does not accept finalize options')
             try:
                 _,report=intake_sync(root,args.pack,plan=args.plan)
                 print(f'Pack: {report["pack_id"]}\nPath: {report["pack_path"]}\nBase: {report["base_commit"]}\nChanges: {report["change_count"]}\nStatus: {report["intake_result"]}')
@@ -104,13 +116,13 @@ def main(argv=None):
                 print(f'sync intake failed: {exc}',file=sys.stderr); sys.exit(exc.exit_code)
         elif args.target=='plan':
             if not args.pack: p.error('project sync plan requires <pack>')
-            if args.commit or args.push or args.message is not None or args.complete or args.apply: p.error('sync plan does not accept finalize options')
+            if args.commit or args.push or args.message is not None or args.complete or args.apply or args.once: p.error('sync plan does not accept finalize options')
             try: out,_=plan_sync(root,args.pack); print(out)
             except SyncPlanError as exc:
                 print(f'sync plan failed: {exc}',file=sys.stderr); sys.exit(2)
         elif args.target=='verify':
             if not args.pack: p.error('project sync verify requires <pack-or-pack-id>')
-            if args.commit or args.push or args.message is not None or args.complete or args.apply: p.error('sync verify does not accept finalize options')
+            if args.commit or args.push or args.message is not None or args.complete or args.apply or args.once: p.error('sync verify does not accept finalize options')
             try: out,_=verify_sync(root,args.pack); print(out)
             except SyncVerifyError as exc:
                 print(f'sync verify failed [{exc.category}]: {exc}',file=sys.stderr)
@@ -138,6 +150,7 @@ def main(argv=None):
                 sys.exit(exc.exit_code)
         elif args.target=='migrate-bindings':
             if args.pack: p.error('project sync migrate-bindings does not accept a pack selector')
+            if args.once: p.error('sync migrate-bindings does not accept --once')
             if args.commit or args.push or args.message is not None or args.complete or args.outcome or args.reason: p.error('sync migrate-bindings accepts only --apply')
             try:
                 results=migrate_bindings(root,apply=args.apply)
@@ -150,7 +163,7 @@ def main(argv=None):
                 print(f'sync migrate-bindings failed: {exc}',file=sys.stderr); sys.exit(exc.exit_code)
         else:
             if args.pack: p.error('legacy project sync accepts one object ID')
-            if args.commit or args.push or args.message is not None or args.complete or args.outcome or args.reason or args.apply: p.error('legacy project sync does not accept finalize options')
+            if args.commit or args.push or args.message is not None or args.complete or args.outcome or args.reason or args.apply or args.once: p.error('legacy project sync does not accept finalize options')
             out,_=task(root,args.target,'sync',args.budget,True); print(out)
     elif args.cmd=='bootstrap':
         out,_=bootstrap(root,args.budget); print(out)

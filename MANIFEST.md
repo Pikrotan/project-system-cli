@@ -1,7 +1,7 @@
 # Distribution Manifest
 
 - Template version: 1.1.0 Stable
-- CLI version: 0.7.0
+- CLI version: 0.8.0
 - Schema version: 1
 - Narrative templates: 34
 - Atomic object types: 12
@@ -12,11 +12,18 @@
 - SYNC REQUEST assets: Bridge v1 contract document and shared-definition JSON schema included in release/package assets
 - SYNC pull assets: Bridge v2 contract, transport runtime and optional policy/provenance schemas included in package assets
 - Terminal SYNC assets: durable binding v1 contract/schema, Git-admin completed store, migration runtime and crash-safe terminalization included in package assets
+- Automatic pickup assets: bounded-cycle contract and OS-neutral pickup runtime included in release/package assets
 - Adversarial hardening: path/symlink safety, transactional module enable rollback, target-first atomic context budgeting, 8-char random IDs, strict frontmatter parsing, symmetric blueprint conflicts
 
 ## MVP CLI commands
 
-`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including `sync pull`, `sync intake`, `sync plan`, `sync verify`, `sync finalize`, and `sync migrate-bindings`), `bootstrap`, `prepare-pr`.
+`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including bounded `sync watch --once`, `sync pull`, `sync intake`, `sync plan`, `sync verify`, `sync finalize`, and `sync migrate-bindings`), `bootstrap`, `prepare-pr`.
+
+## Automatic Pickup Core — Stage 1
+
+Version 0.8.0 adds the OS-neutral, single-cycle `project sync watch --once`. It validates local configuration/repository/bindings, reconciles completed transport identity, evaluates authorized marked open GitHub Issues oldest-first by Issue number, and delegates at most one selected request to the existing pull/intake/plan pipeline. Stable structured statuses distinguish created/no-pending, active or awaiting-push work, dirty state, unfinished transactions, malformed queue heads, integrity/identity conflicts, configuration failures and transport failures. The shared intake lock coordinates selection through pack creation with manual pull/intake. The cycle never performs semantic edits, verification, finalization, staging, commit, push or GitHub mutation. Persistent loops, scheduler integration, autostart and notifications are not part of Stage 1. See `SYNC_PICKUP_V1.md`.
+
+Automatic pickup verification: **276 passed, 1 Windows symlink-permission skip**. Coverage includes empty and multi-Issue queues, oldest-first single selection, completed skips and request-identity drift, lifecycle-only close/reopen/update tolerance, active/awaiting-push/dirty/transaction blocks, marker and author filtering, malformed-head and duplicate-request blocking, no canonical/Git mutation, and cooperative intake-lock races. Mutable GitHub lifecycle timestamps/state remain provenance-only for completed records; request identity and archived integrity remain fail-closed. Temporary package verification uses mocked transport only; no live network or production-project mutation is performed.
 
 ## Durable terminal SYNC lifecycle
 

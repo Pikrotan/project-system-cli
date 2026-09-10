@@ -52,6 +52,8 @@ Committed terminal proof records the verification fingerprint, exact canonical p
 
 The unified binding layer reads active inbox packs and completed Git-admin records. An unchanged completed Issue returns `completed`/already processed and never creates or replans a pack. Changes to body, title, author, URL, GitHub update timestamp or request bytes are transport drift. Reusing its request ID in another Issue is a collision. A new approved intent requires a new Issue and request ID.
 
+CLI 0.8.0 bounded automatic pickup refines this for terminal records: GitHub lifecycle-only `state`, `state_reason`, `updated_at`, and `closed_at` changes are provenance-only and do not block the unattended queue. Request/Issue identity, content, hashes, and archive/binding integrity remain blocking. Existing 0.7 records require no migration. Manual 0.7 pull UX retains its full-snapshot comparison.
+
 ## Legacy migration
 
 ```text

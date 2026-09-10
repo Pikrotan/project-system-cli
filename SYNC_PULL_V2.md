@@ -86,6 +86,8 @@ Acknowledgement is **local only**. After successful intake and a final unchanged
 
 While active, the immutable intake pack is the durable local processed identity; generated receipts are disposable and reconstructible. After terminal completion, CLI 0.7.0 preserves the exact pack bytes and a sealed binding in the worktree-specific Git administrative store, removes the inbox copy, and continues to compare the selected live snapshot to that completed identity. Body/title/author/URL/`updated_at` changes are drift, even when request bytes still match. Deleted/inaccessible processed Issues require reconciliation. Timestamp-only GitHub updates can therefore require review; unrelated drift is reported without globally disabling intake. See `SYNC_TERMINAL_V1.md`.
 
+CLI 0.8.0 also exposes the bounded automatic consumer `project sync watch --once`. It applies a semantic unattended drift policy: completed request/Issue identity drift, duplicate request identities and a malformed authorized oldest request block the cycle, while GitHub lifecycle-only state/timestamp changes do not. See `SYNC_PICKUP_V1.md`. Manual `sync pull` behavior remains backward compatible.
+
 Unlike direct intake, pull never creates another binding for a processed Issue merely because HEAD advanced. It returns the original pack; `--plan` against an old HEAD fails as stale. Intentional new synchronization needs a separately approved new request/Issue. Direct intake retains its 0.5.0 same-bytes/new-HEAD behavior. A request previously ingested without matching transport cannot acquire that provenance by overwriting its pack; use a reviewed new request identity.
 
 ## Failure and trust boundaries

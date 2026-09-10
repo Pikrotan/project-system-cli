@@ -13,7 +13,7 @@ from jsonschema import Draft202012Validator
 
 from .sync_intake import (
     SyncIntakeError, _check_report_paths, _find_reusable, _read_request,
-    intake_bindings, intake_sync,
+    _intake_lock, intake_bindings, intake_sync,
 )
 from .sync_bindings import SyncBindingError
 from .sync_planning import (
@@ -25,10 +25,43 @@ from .utils import distribution_root
 MARKER = '[SYNC REQUEST]'
 REPOSITORY_RE = re.compile(r'[A-Za-z0-9-]+/[A-Za-z0-9_.-]+')
 AUTHOR_RE = re.compile(r'[A-Za-z0-9-]+(?:\[bot\])?')
+TRANSPORT_REQUEST_IDENTITY_FIELDS = (
+    'kind',
+    'repository',
+    'issue_number',
+    'issue_url',
+    'issue_author',
+    'body_sha256',
+    'request_sha256',
+    'title_sha256',
+)
 
 
 class SyncPullError(RuntimeError):
     exit_code = 2
+
+
+def transport_request_identity(transport):
+    """Return immutable GitHub request identity, excluding lifecycle provenance."""
+    if not isinstance(transport, dict):
+        raise SyncPullError('GitHub transport identity is missing')
+    missing = [field for field in TRANSPORT_REQUEST_IDENTITY_FIELDS if field not in transport]
+    if missing:
+        raise SyncPullError(
+            'GitHub transport identity is missing: ' + ', '.join(missing)
+        )
+    identity = {field: transport[field] for field in TRANSPORT_REQUEST_IDENTITY_FIELDS}
+    for field in ('repository', 'issue_url', 'issue_author'):
+        value = identity[field]
+        if not isinstance(value, str):
+            raise SyncPullError(f'GitHub transport identity field {field} is invalid')
+        identity[field] = value.lower()
+    return identity
+
+
+def same_transport_request_identity(left, right):
+    """Compare request/Issue identity while retaining mutable fields as provenance."""
+    return transport_request_identity(left) == transport_request_identity(right)
 
 
 def github_repository(root):
@@ -58,8 +91,12 @@ def pull_policy(root, repository):
     config, _ = load_sync_bytes((root / 'project.yaml').read_bytes(), 'project configuration')
     external = config.get('external_systems')
     github = external.get('github', {}) if isinstance(external, dict) else {}
-    if not isinstance(github, dict) or github.get('enabled') is not True:
-        raise SyncPullError('sync pull is disabled: configure external_systems.github.enabled and sync_pull.allowed_authors')
+    if (not isinstance(github, dict) or github.get('enabled') is not True
+            or github.get('mode') != 'sync'):
+        raise SyncPullError(
+            'sync pull is disabled: configure external_systems.github.enabled, '
+            'mode: sync, and sync_pull.allowed_authors'
+        )
     policy = github.get('sync_pull')
     schema = json.loads((distribution_root() / 'schemas/project.schema.json').read_text(encoding='utf-8'))
     errors = list(Draft202012Validator(schema['$defs']['github_sync_pull']).iter_errors(policy))
@@ -179,7 +216,7 @@ def issue_request(issue, repository, allowed_authors, *, require_open=True):
     return {'request': request, 'raw': raw, 'transport': transport, 'binding': None}
 
 
-def inspect_pull(root, issue_number=None):
+def inspect_pull(root, issue_number=None, *, strict_processed_drift=False):
     """Read-only discovery/authorship/schema/drift checks; no generated writes."""
     root = Path(root).resolve()
     repository = github_repository(root)
@@ -221,7 +258,14 @@ def inspect_pull(root, issue_number=None):
             if number in bindings:
                 binding = bindings[number]
                 path, pack, raw = tuple(binding)
-                if candidate['transport'] != pack['provenance']['transport']:
+                stored_transport = pack['provenance']['transport']
+                completed_identity_matches = (
+                    binding.state == 'completed'
+                    and strict_processed_drift
+                    and same_transport_request_identity(candidate['transport'], stored_transport)
+                    and candidate['request']['request_id'] == pack['provenance']['request_id']
+                )
+                if not completed_identity_matches and candidate['transport'] != stored_transport:
                     raise SyncPullError('transport metadata/body/title changed')
                 if binding.state == 'completed':
                     candidate['binding'] = binding
@@ -237,6 +281,10 @@ def inspect_pull(root, issue_number=None):
                 if number in bindings:
                     raise SyncPullError(f'transport drift/conflict for processed issue #{number}: {exc}') from exc
                 raise
+            if strict_processed_drift and number in bindings:
+                raise SyncPullError(
+                    f'transport drift/conflict for processed issue #{number}: {exc}'
+                ) from exc
             if number in bindings or issue_number is not None:
                 reconciliation_warnings.append(f'issue #{number}: reconciliation needed: {exc}')
                 continue
@@ -270,17 +318,30 @@ def inspect_pull(root, issue_number=None):
             'warnings': reconciliation_warnings}
 
 
-def pull_sync(root, *, plan=False, issue_number=None):
+def pull_sync(root, *, plan=False, issue_number=None, _lock_held=False,
+              _strict_processed_drift=False):
     try:
-        return _pull_sync(Path(root).resolve(), plan=plan, issue_number=issue_number)
+        root = Path(root).resolve()
+        if _lock_held:
+            return _pull_sync(
+                root, plan=plan, issue_number=issue_number,
+                strict_processed_drift=_strict_processed_drift,
+            )
+        with _intake_lock(root):
+            return _pull_sync(
+                root, plan=plan, issue_number=issue_number,
+                strict_processed_drift=_strict_processed_drift,
+            )
     except SyncPullError:
         raise
     except (SyncIntakeError, SyncBindingError, SyncPlanError, OSError, ValueError, TypeError, KeyError, subprocess.TimeoutExpired) as exc:
         raise SyncPullError(str(exc)) from exc
 
 
-def _pull_sync(root, *, plan, issue_number):
-    inspection = inspect_pull(root, issue_number)
+def _pull_sync(root, *, plan, issue_number, strict_processed_drift=False):
+    inspection = inspect_pull(
+        root, issue_number, strict_processed_drift=strict_processed_drift,
+    )
     candidate = inspection['selected']
     if candidate is None:
         if plan and inspection['processed_count'] > 1:
@@ -301,7 +362,10 @@ def _pull_sync(root, *, plan, issue_number):
             or _git_head(root) != inspection['head']):
         raise SyncPullError('local repository/policy/HEAD changed during pull; retry')
     if candidate['binding'] is None:
-        path, intake = intake_sync(root, '-', stdin=BytesIO(candidate['raw']), plan=plan, transport=transport)
+        path, intake = intake_sync(
+            root, '-', stdin=BytesIO(candidate['raw']), plan=plan,
+            transport=transport, _lock_held=True,
+        )
         status = intake['intake_result']
         pack_id, base_commit = intake['pack_id'], intake['base_commit']
         pack_hash = intake['pack_sha256']

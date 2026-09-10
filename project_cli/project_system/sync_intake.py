@@ -1,6 +1,6 @@
 """Bridge v1: bind approved transport data without interpreting its meaning."""
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -205,21 +205,24 @@ def _write_intake_report(root, report):
     _write_output(output, 'intake.md', '\n'.join(lines))
 
 
-def intake_sync(root, selector, *, plan=False, stdin=None, transport=None):
+def intake_sync(root, selector, *, plan=False, stdin=None, transport=None, _lock_held=False):
     """Validate first, exclusively create/reuse an immutable pack, optionally plan."""
     try:
-        return _intake_sync(Path(root).resolve(), selector, plan=plan, stdin=stdin, transport=transport)
+        return _intake_sync(
+            Path(root).resolve(), selector, plan=plan, stdin=stdin,
+            transport=transport, lock_held=_lock_held,
+        )
     except SyncIntakeError:
         raise
     except (SyncPlanError, SyncBindingError, OSError, ValueError, TypeError) as exc:
         raise SyncIntakeError(str(exc)) from exc
 
 
-def _intake_sync(root, selector, *, plan, stdin, transport=None):
+def _intake_sync(root, selector, *, plan, stdin, transport=None, lock_held=False):
     request, request_hash = _read_request(selector, stdin)
     project_id = load_yaml(root / 'project.yaml').get('project', {}).get('id')
     head = _git_head(root)
-    with _intake_lock(root):
+    with (nullcontext() if lock_held else _intake_lock(root)):
         existing, used_ids = _find_reusable(root, request, request_hash, project_id, head, transport)
         now = datetime.now(timezone.utc)
         reused = existing is not None

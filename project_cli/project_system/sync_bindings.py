@@ -17,6 +17,7 @@ import uuid
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
+from .process_runner import run_process
 from .sync_planning import (
     PACK_SUFFIXES,
     SyncPlanError,
@@ -62,7 +63,7 @@ def _is_link_or_junction(path):
 
 def _git(root, args):
     try:
-        result = subprocess.run(
+        result = run_process(
             ['git', *args], cwd=root, capture_output=True, text=True,
             check=False, timeout=30,
         )
@@ -367,17 +368,19 @@ def validate_completed_git_proof(root, binding):
         ['merge-base', '--is-ancestor', commit_sha, 'HEAD'],
     ]
     for args in checks:
-        result = subprocess.run(['git', *args], cwd=root, capture_output=True, check=False, timeout=30)
+        result = run_process(
+            ['git', *args], cwd=root, capture_output=True, check=False, timeout=30,
+        )
         if result.returncode:
             raise SyncBindingError('terminal commit is missing or is not an ancestor of current HEAD')
-    parents = subprocess.run(
+    parents = run_process(
         ['git', 'rev-list', '--parents', '-n', '1', commit_sha], cwd=root,
         capture_output=True, text=True, check=False, timeout=30,
     )
     values = parents.stdout.split()
     if parents.returncode or len(values) != 2 or values[1].lower() != binding.terminal['base_commit']:
         raise SyncBindingError('terminal commit/base relationship is invalid')
-    changed = subprocess.run(
+    changed = run_process(
         ['git', 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', commit_sha, '--'],
         cwd=root, capture_output=True, text=True, check=False, timeout=30,
     )
@@ -483,7 +486,7 @@ def terminalize_binding(root, active_path, pack, raw, binding):
         raise SyncBindingError('refusing to terminalize a symlink/junction pack')
     if not active_path.is_file() or active_path.read_bytes() != raw:
         raise SyncBindingError('active pack changed before terminalization')
-    staged = subprocess.run(
+    staged = run_process(
         ['git', 'ls-files', '--stage', '--', f'inbox/sync/{pack["pack_id"]}.yaml'],
         cwd=root, capture_output=True, text=True, check=False, timeout=30,
     )

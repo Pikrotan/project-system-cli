@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-system-cli"
-version = "0.9.0"
+version = "0.10.0"
 description = "Git-native AI-neutral project knowledge and governance CLI"
 requires-python = ">=3.11"
 dependencies = ["PyYAML>=6.0", "jsonschema>=4.20"]
@@ -26,4 +26,4 @@ project_system_assets = ["**/*"]
 "*" = ["**/__pycache__/*", "**/*.pyc", "**/*.pyo"]
 
 [tool.setuptools.data-files]
-"." = ["SYNC_PACK_V1.md", "SYNC_REQUEST_V1.md", "SYNC_PULL_V2.md", "SYNC_TERMINAL_V1.md", "SYNC_PICKUP_V1.md", "SYNC_WATCHER_V1.md"]
+"." = ["SYNC_PACK_V1.md", "SYNC_REQUEST_V1.md", "SYNC_PULL_V2.md", "SYNC_TERMINAL_V1.md", "SYNC_PICKUP_V1.md", "SYNC_WATCHER_V1.md", "SYNC_AUTO_WINDOWS_V1.md"]

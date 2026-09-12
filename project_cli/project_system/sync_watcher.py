@@ -1,4 +1,4 @@
-"""Persistent foreground runtime for the bounded automatic SYNC pickup cycle.
+"""Shared foreground/scheduled runtime for bounded automatic SYNC pickup.
 
 The watcher owns only disposable runtime artifacts.  Queue selection and pack
 creation remain entirely in :mod:`sync_pickup` and its shared intake lock.
@@ -75,7 +75,7 @@ def _lock_file(stream):
             msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError as exc:
             raise SyncWatcherAlreadyRunningError(
-                'another persistent watcher is already running for this project/worktree'
+                'another automatic SYNC runtime is already running for this project/worktree'
             ) from exc
         return ('windows', msvcrt)
     import fcntl
@@ -83,7 +83,7 @@ def _lock_file(stream):
         fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as exc:
         raise SyncWatcherAlreadyRunningError(
-            'another persistent watcher is already running for this project/worktree'
+                'another automatic SYNC runtime is already running for this project/worktree'
         ) from exc
     return ('posix', fcntl)
 
@@ -233,7 +233,10 @@ def _recover_event_log(root):
     }
 
 
-def _append_event(root, event, *, clock, project_id, repository, **fields):
+def _append_event(
+    root, event, *, clock, project_id, repository, mode=None,
+    registration_id=None, **fields,
+):
     path = _runtime_path(root, 'events.jsonl')
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
@@ -243,6 +246,10 @@ def _append_event(root, event, *, clock, project_id, repository, **fields):
         'project_id': project_id,
         'repository': repository,
     }
+    if mode is not None:
+        record['mode'] = mode
+    if registration_id is not None:
+        record['registration_id'] = registration_id
     # Callers pass only bounded identifiers/statuses.  Reasons and Issue bodies
     # are deliberately excluded from the operational log.
     record.update({key: value for key, value in fields.items() if value is not None})
@@ -284,8 +291,10 @@ def run_watcher(
     sleeper=None,
     on_cycle=None,
     max_cycles=None,
+    mode='foreground',
+    registration_id=None,
 ):
-    """Run the foreground watcher until interruption or a fatal cycle result.
+    """Run pickup cycles until bounded completion, interruption, or fatal result.
 
     ``max_cycles`` and injected boundaries exist for deterministic tests and
     packaged smoke checks; the public persistent CLI does not set a limit.
@@ -297,6 +306,10 @@ def run_watcher(
     sleeper = sleeper or time.sleep
     if max_cycles is not None and (type(max_cycles) is not int or max_cycles < 1):
         raise SyncWatcherError('max_cycles must be a positive integer')
+    if mode not in {'foreground', 'scheduled'}:
+        raise SyncWatcherError('watcher mode must be foreground or scheduled')
+    if mode == 'foreground' and registration_id is not None:
+        raise SyncWatcherError('foreground watcher cannot use a registration ID')
 
     project_id, repository = _preflight(root)
     started_at = _iso(clock())
@@ -304,6 +317,8 @@ def run_watcher(
         'schema_version': 1,
         'project_id': project_id,
         'repository': repository,
+        'mode': mode,
+        'registration_id': registration_id,
         'watcher_status': 'starting',
         'started_at': started_at,
         'stopped_at': None,
@@ -314,29 +329,27 @@ def run_watcher(
         'consecutive_failures': 0,
         'current_delay_seconds': interval,
         'next_check_at': None,
+        'last_error_category': None,
     }
     interrupted = False
     cycles = 0
 
     with watcher_lock(root, project_id=project_id, started_at=started_at):
         recovery = _recover_event_log(root)
+        def append(event, **fields):
+            return _append_event(
+                root, event, clock=clock, project_id=project_id,
+                repository=repository, mode=mode,
+                registration_id=registration_id, **fields,
+            )
         try:
             state['watcher_status'] = 'running'
             _write_state(root, state)
-            _append_event(
-                root, 'watcher_started', clock=clock, project_id=project_id,
-                repository=repository, interval_seconds=interval, pid=os.getpid(),
-            )
+            append('watcher_started', interval_seconds=interval, pid=os.getpid())
             if recovery is not None:
-                _append_event(
-                    root, 'event_log_recovered', clock=clock, project_id=project_id,
-                    repository=repository, **recovery,
-                )
+                append('event_log_recovered', **recovery)
             while True:
-                _append_event(
-                    root, 'cycle_started', clock=clock, project_id=project_id,
-                    repository=repository, cycle=cycles + 1,
-                )
+                append('cycle_started', cycle=cycles + 1)
                 try:
                     report = pickup(root)
                 except KeyboardInterrupt:
@@ -345,11 +358,9 @@ def run_watcher(
                 except Exception as exc:
                     state['watcher_status'] = 'error'
                     state['next_check_at'] = None
+                    state['last_error_category'] = 'pickup_exception'
                     _write_state(root, state)
-                    _append_event(
-                        root, 'watcher_error', clock=clock, project_id=project_id,
-                        repository=repository, error_type=type(exc).__name__,
-                    )
+                    append('watcher_error', error_type=type(exc).__name__)
                     raise SyncWatcherError(
                         f'watcher pickup cycle raised {type(exc).__name__}'
                     ) from exc
@@ -359,11 +370,9 @@ def run_watcher(
                 if status not in NORMAL_STATUSES | RETRYABLE_STATUSES | FATAL_STATUSES:
                     state['watcher_status'] = 'error'
                     state['next_check_at'] = None
+                    state['last_error_category'] = 'invalid_pickup_status'
                     _write_state(root, state)
-                    _append_event(
-                        root, 'watcher_error', clock=clock, project_id=project_id,
-                        repository=repository, error_type='invalid_pickup_status',
-                    )
+                    append('watcher_error', error_type='invalid_pickup_status')
                     raise SyncWatcherError(
                         f'watcher pickup returned unknown status: {status!r}'
                     )
@@ -378,9 +387,11 @@ def run_watcher(
 
                 if status in RETRYABLE_STATUSES:
                     state['consecutive_failures'] += 1
+                    state['last_error_category'] = status
                     delay = _next_delay(interval, state['consecutive_failures'])
                 else:
                     state['consecutive_failures'] = 0
+                    state['last_error_category'] = status if status in FATAL_STATUSES else None
                     delay = interval
                 state['current_delay_seconds'] = delay
 
@@ -396,37 +407,22 @@ def run_watcher(
                     'consecutive_failures': state['consecutive_failures'],
                     'next_delay_seconds': None if fatal else delay,
                 }
-                _append_event(
-                    root, 'cycle_finished', clock=clock, project_id=project_id,
-                    repository=repository, **event_fields,
-                )
+                append('cycle_finished', **event_fields)
                 if status == 'created':
-                    _append_event(
-                        root, 'request_created', clock=clock, project_id=project_id,
-                        repository=repository, issue_number=report.get('issue_number'),
-                        pack_id=report.get('pack_id'),
-                    )
+                    append('request_created', issue_number=report.get('issue_number'),
+                           pack_id=report.get('pack_id'))
                 elif status.startswith('blocked_'):
-                    _append_event(
-                        root, 'blocked', clock=clock, project_id=project_id,
-                        repository=repository, status=status,
-                        issue_number=report.get('issue_number'),
-                        pack_id=report.get('pack_id'),
-                    )
+                    append('blocked', status=status,
+                           issue_number=report.get('issue_number'),
+                           pack_id=report.get('pack_id'))
                 if status in RETRYABLE_STATUSES:
-                    _append_event(
-                        root, 'backoff_changed', clock=clock, project_id=project_id,
-                        repository=repository, status=status,
-                        consecutive_failures=state['consecutive_failures'],
-                        delay_seconds=delay,
-                    )
+                    append('backoff_changed', status=status,
+                           consecutive_failures=state['consecutive_failures'],
+                           delay_seconds=delay)
                 if on_cycle is not None:
                     on_cycle(report, dict(state))
                 if fatal:
-                    _append_event(
-                        root, 'watcher_error', clock=clock, project_id=project_id,
-                        repository=repository, status=status,
-                    )
+                    append('watcher_error', status=status)
                     raise SyncWatcherError(
                         f'watcher stopped on non-retryable status {status}'
                     )
@@ -443,12 +439,9 @@ def run_watcher(
             state['stopped_at'] = _iso(clock())
             state['next_check_at'] = None
             _write_state(root, state)
-            _append_event(
-                root, 'watcher_stopped', clock=clock, project_id=project_id,
-                repository=repository,
-                stop_reason='keyboard_interrupt' if interrupted else state['watcher_status'],
-                cycles=cycles,
-            )
+            append('watcher_stopped',
+                   stop_reason='keyboard_interrupt' if interrupted else state['watcher_status'],
+                   cycles=cycles)
 
     return {
         'schema_version': 1,

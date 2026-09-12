@@ -22,6 +22,9 @@ from .sync_pickup import BLOCKED_STATUSES, pickup_once
 from .sync_watcher import (
     DEFAULT_INTERVAL_SECONDS, SyncWatcherError, run_watcher,
 )
+from .sync_auto import (
+    SyncAutoError, install_auto, remove_auto, run_auto, status_auto,
+)
 
 TYPES=list(DIRS)
 
@@ -51,12 +54,21 @@ def main(argv=None):
     q=sp.add_parser('enable'); q.add_argument('module')
     q=sp.add_parser('disable'); q.add_argument('module')
     q=sp.add_parser('task'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='implement')
-    q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, "watch", "pull", "intake", "plan", "verify", "finalize", or "migrate-bindings"'); q.add_argument('pack',nargs='?',help='SYNC REQUEST path (or - for stdin), SYNC PACK path, or pack_id'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--commit',action='store_true',help='explicitly commit the verified canonical state'); q.add_argument('--push',action='store_true',help='explicitly push an already verified SYNC commit'); q.add_argument('--message',help='custom commit message; valid only with --commit'); q.add_argument('--complete',action='store_true',help='explicitly complete a non-commit GitHub transport outcome'); q.add_argument('--outcome',choices=['reviewed-no-change','rejected','abandoned'],help='terminal outcome; requires --complete'); q.add_argument('--reason',help='required human reason for --complete'); q.add_argument('--apply',action='store_true',help='apply a deterministic sync binding migration audit'); q.add_argument('--plan',action='store_true',help='plan the bound pack after intake/pull'); q.add_argument('--issue',type=int,help='select one GitHub transport Issue; valid only with sync pull'); q.add_argument('--once',action='store_true',help='run exactly one bounded automatic pickup cycle; valid only with sync watch'); q.add_argument('--interval',type=int,help='persistent watcher interval in seconds (60..3600, default 120)')
+    q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, "auto", "watch", "pull", "intake", "plan", "verify", "finalize", or "migrate-bindings"'); q.add_argument('pack',nargs='?',help='SYNC action, REQUEST/PACK path, or pack_id'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--commit',action='store_true',help='explicitly commit the verified canonical state'); q.add_argument('--push',action='store_true',help='explicitly push an already verified SYNC commit'); q.add_argument('--message',help='custom commit message; valid only with --commit'); q.add_argument('--complete',action='store_true',help='explicitly complete a non-commit GitHub transport outcome'); q.add_argument('--outcome',choices=['reviewed-no-change','rejected','abandoned'],help='terminal outcome; requires --complete'); q.add_argument('--reason',help='required human reason for --complete'); q.add_argument('--apply',action='store_true',help='apply a deterministic sync binding migration audit'); q.add_argument('--plan',action='store_true',help='plan the bound pack after intake/pull'); q.add_argument('--issue',type=int,help='select one GitHub transport Issue; valid only with sync pull'); q.add_argument('--once',action='store_true',help='run exactly one bounded automatic pickup cycle; valid only with sync watch'); q.add_argument('--interval',type=int,help='watcher/scheduler interval in seconds (60..3600, default 120)'); q.add_argument('--replace',action='store_true',help='replace this project automatic SYNC registration after ownership proof'); q.add_argument('--json',dest='json_output',action='store_true',help='emit machine-readable automatic SYNC status'); q.add_argument('--registration',help='validated automatic SYNC registration ID; internal run command only')
     q=sp.add_parser('bootstrap'); q.add_argument('--budget',choices=['small','medium','large'],default='medium')
     sp.add_parser('prepare-pr')
     args=p.parse_args(argv)
     if args.cmd=='init':
         path=args.path or ('./'+args.name); r=init_project(args.name,path,args.type,args.governance,args.full_docs); print(r); return
+    if args.cmd=='sync' and args.target=='auto' and args.pack=='run':
+        if not args.registration: p.error('project sync auto run requires --registration REG-ID')
+        if args.interval is not None or args.replace or args.json_output or args.once or args.plan or args.issue is not None or args.apply or args.commit or args.push or args.message is not None or args.complete or args.outcome or args.reason: p.error('sync auto run accepts only --registration REG-ID')
+        try:
+            report=run_auto(args.registration)
+            print(json.dumps(report,sort_keys=True,ensure_ascii=False))
+        except SyncAutoError as exc:
+            print(f'sync auto run failed: {exc}',file=sys.stderr); sys.exit(exc.exit_code)
+        return
     root=find_root()
     if args.cmd=='new':
         path,oid=create_object(root,args.type,args.title,args.domain,args.owner); print(f'{oid}\n{path.relative_to(root)}')
@@ -85,9 +97,35 @@ def main(argv=None):
         if args.issue is not None and args.target != 'pull': p.error('--issue is valid only with sync pull')
         if args.apply and args.target != 'migrate-bindings': p.error('--apply is valid only with sync migrate-bindings')
         if args.once and args.target != 'watch': p.error('--once is valid only with sync watch')
-        if args.interval is not None and args.target != 'watch': p.error('--interval is valid only with sync watch')
+        if args.interval is not None and args.target not in {'watch','auto'}: p.error('--interval is valid only with sync watch or sync auto install')
+        if (args.replace or args.json_output or args.registration is not None) and args.target != 'auto': p.error('--replace/--json/--registration are valid only with sync auto')
         if (args.complete or args.outcome is not None or args.reason is not None) and args.target != 'finalize': p.error('--complete/--outcome/--reason are valid only with sync finalize')
-        if args.target=='watch':
+        if args.target=='auto':
+            action=args.pack
+            if action not in {'install','status','remove'}: p.error('project sync auto requires install, status, remove, or run')
+            common_invalid=args.commit or args.push or args.message is not None or args.complete or args.outcome or args.reason or args.apply or args.plan or args.issue is not None or args.once or args.registration is not None
+            if common_invalid: p.error('sync auto install/status/remove do not accept other sync workflow options')
+            if action!='install' and (args.interval is not None or args.replace): p.error('--interval/--replace are valid only with sync auto install')
+            if action!='status' and args.json_output: p.error('--json is valid only with sync auto status')
+            try:
+                if action=='install':
+                    interval=args.interval if args.interval is not None else DEFAULT_INTERVAL_SECONDS
+                    report=install_auto(root,interval=interval,replace=args.replace)
+                    registration=report['registration']
+                    print(f'Registration: {registration["registration_id"]}\nProject: {registration["project_id"]}\nRepository: {registration["repository"]}\nTask: {registration["task_name"]}\nInterval: {registration["interval_seconds"]}\nStatus: {report["status"]}')
+                elif action=='status':
+                    report=status_auto(root)
+                    if args.json_output:
+                        print(json.dumps(report,sort_keys=True,ensure_ascii=False))
+                    else:
+                        print(f'Registration: {report["registration_id"]}\nProject: {report["project_id"]}\nRepository: {report["repository"]}\nTask: {report["task_name"]}\nInstalled: {"yes" if report["installed"] else "no"}\nTask state: {report["task_state"]}\nInterval: {report["interval_seconds"]}\nLast cycle: {report["last_cycle_at"] or "never"}\nLast status: {report["last_cycle_status"] or "none"}\nLast issue: {report["last_issue"] or "none"}\nLast pack: {report["last_pack"] or "none"}\nLast error: {report["last_error_category"] or "none"}\nNext run: {report["next_scheduled_run"] or "unknown"}')
+                        for warning in report['warnings']: print(f'Warning: {warning}')
+                else:
+                    report=remove_auto(root)
+                    print(f'Registration: {report["registration_id"]}\nTask: {report["task_name"]}\nStatus: {report["status"]}')
+            except SyncAutoError as exc:
+                print(f'sync auto {action} failed: {exc}',file=sys.stderr); sys.exit(exc.exit_code)
+        elif args.target=='watch':
             if args.pack or args.commit or args.push or args.message is not None or args.complete or args.outcome or args.reason or args.apply or args.plan or args.issue is not None: p.error('sync watch accepts only --once or --interval SECONDS')
             if args.once:
                 if args.interval is not None: p.error('sync watch --once does not accept --interval')

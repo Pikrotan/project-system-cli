@@ -6,6 +6,7 @@ import subprocess
 
 import yaml
 
+from .process_runner import run_process
 from .frontmatter import StrictSafeLoader, _reject_aliases, read_object
 from .generation import GenerationBlockedError, generate
 from .graph import extract_refs
@@ -54,7 +55,7 @@ class SyncValidationError(SyncVerifyError):
 
 
 def _git(root, args, *, text=False, allow_failure=False):
-    result = subprocess.run(
+    result = run_process(
         ['git', *args],
         cwd=root,
         capture_output=True,

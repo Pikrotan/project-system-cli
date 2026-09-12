@@ -9,6 +9,7 @@ import subprocess
 from jsonschema import Draft202012Validator, FormatChecker
 import yaml
 
+from .process_runner import run_process
 from .frontmatter import StrictSafeLoader
 from .graph import extract_refs
 from .ids import PREFIX
@@ -144,7 +145,7 @@ def _validate_pack_schema(pack):
 
 
 def _git_head(root):
-    result = subprocess.run(
+    result = run_process(
         ['git', 'rev-parse', 'HEAD'],
         cwd=root,
         text=True,
@@ -157,7 +158,7 @@ def _git_head(root):
 
 
 def _git_status_paths(root):
-    result = subprocess.run(
+    result = run_process(
         ['git', 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
         cwd=root,
         capture_output=True,
@@ -204,7 +205,7 @@ def _ensure_clean_plan_baseline(root, pack_path):
 
 
 def _ignored_untracked_baseline(root, pack_path):
-    result = subprocess.run(
+    result = run_process(
         ['git', 'ls-files', '--others', '--ignored', '--exclude-standard', '-z'],
         cwd=root,
         capture_output=True,

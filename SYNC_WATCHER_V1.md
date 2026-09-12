@@ -7,7 +7,7 @@ project sync watch
 project sync watch --interval 120
 ```
 
-`project sync watch --once` remains the original single bounded cycle. Persistent mode defaults to 120 seconds and accepts whole-second intervals from 60 through 3600. It remains attached to the terminal and has no scheduler, autostart, service, daemon, or install/status/remove integration.
+`project sync watch --once` remains the original single bounded cycle. Persistent mode defaults to 120 seconds and accepts whole-second intervals from 60 through 3600. The foreground command remains attached to the terminal and is not itself a scheduler, service, or daemon. CLI 0.10 reuses this runtime for one-cycle Windows Scheduled Task invocations as documented separately in `SYNC_AUTO_WINDOWS_V1.md`.
 
 ## Runtime lifecycle
 
@@ -19,23 +19,24 @@ Ctrl+C during pickup or waiting records a stopped state and event, releases the 
 
 ## Watcher lock
 
-`.generated/sync/auto/watcher.lock` is a separate watcher-level lock. The process holds a non-blocking OS file lock for its full lifetime (`msvcrt` on Windows and `flock` on POSIX). The file itself may remain after shutdown or a crash; an unlocked file is safely reusable, so no PID-only stale-lock guessing or deletion of another live process's lock is needed. A second persistent watcher for the same project/worktree fails clearly. The existing `.generated/sync/.intake.lock` remains responsible for races with manual pull/intake writers.
+`.generated/sync/auto/watcher.lock` is a separate runtime-level lock. The process holds a non-blocking OS file lock for its full lifetime (`msvcrt` on Windows and `flock` on POSIX). The file itself may remain after shutdown or a crash; an unlocked file is safely reusable, so no PID-only stale-lock guessing or deletion of another live process's lock is needed. A second foreground or scheduled runtime for the same project/worktree fails clearly. The existing `.generated/sync/.intake.lock` remains responsible for races with manual pull/intake writers.
 
 ## Disposable state
 
 `.generated/sync/auto/state.json` is atomically replaced after startup, every cycle, and shutdown. Schema version 1 contains:
 
 - `schema_version`, `project_id`, and origin-derived `repository`;
+- `mode` (`foreground` or `scheduled`) and optional scheduled `registration_id`;
 - `watcher_status`: `starting`, `running`, `stopped`, or `error`;
 - `started_at`, `stopped_at`, `last_cycle_at`, and `next_check_at` UTC timestamps;
 - `last_cycle_status`, `last_issue`, and `last_pack`;
-- `consecutive_failures` and `current_delay_seconds`.
+- `consecutive_failures`, `current_delay_seconds`, and bounded `last_error_category`.
 
 Deletion of this state loses only operational observability. Processed request identity remains in the durable 0.7+ active/completed bindings.
 
 ## Operational events
 
-`.generated/sync/auto/events.jsonl` is append-only during normal operation. Every line is one UTF-8 JSON object with `schema_version`, UTC `timestamp`, `event`, `project_id`, and `repository`, plus bounded event-specific identifiers/statuses. Event names are `watcher_started`, `cycle_started`, `cycle_finished`, `request_created`, `blocked`, `backoff_changed`, `watcher_error`, `watcher_stopped`, and `event_log_recovered`.
+`.generated/sync/auto/events.jsonl` is append-only during normal operation. Every line is one UTF-8 JSON object with `schema_version`, UTC `timestamp`, `event`, `project_id`, `repository`, runtime `mode`, optional scheduled `registration_id`, and bounded event-specific identifiers/statuses. Event names are `watcher_started`, `cycle_started`, `cycle_finished`, `request_created`, `blocked`, `backoff_changed`, `watcher_error`, `watcher_stopped`, and `event_log_recovered`.
 
 The log may contain Issue numbers, pack IDs, statuses, delays, counters and process ID. It does not contain Issue bodies, request payloads, GitHub tokens, subprocess stderr, or free-form failure reasons.
 

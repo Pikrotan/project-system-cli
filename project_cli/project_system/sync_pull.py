@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator
 
+from .process_runner import run_process
 from .sync_intake import (
     SyncIntakeError, _check_report_paths, _find_reusable, _read_request,
     _intake_lock, intake_bindings, intake_sync,
@@ -65,8 +66,8 @@ def same_transport_request_identity(left, right):
 
 
 def github_repository(root):
-    result = subprocess.run(['git', 'remote', 'get-url', '--all', 'origin'], cwd=root,
-                            capture_output=True, text=True, check=False, timeout=30)
+    result = run_process(['git', 'remote', 'get-url', '--all', 'origin'], cwd=root,
+                         capture_output=True, text=True, check=False, timeout=30)
     urls = result.stdout.strip().splitlines()
     if result.returncode or len(urls) != 1:
         raise SyncPullError('sync pull requires exactly one Git origin fetch URL')
@@ -129,7 +130,9 @@ def gh_get(root, endpoint, fields=()):
         args += ['-f', field]
     env = dict(os.environ, GH_PROMPT_DISABLED='1', GH_NO_UPDATE_NOTIFIER='1')
     try:
-        result = subprocess.run(args, cwd=root, env=env, capture_output=True, check=False, timeout=30)
+        result = run_process(
+            args, cwd=root, env=env, capture_output=True, check=False, timeout=30,
+        )
     except FileNotFoundError as exc:
         raise SyncPullError('gh is unavailable; install GitHub CLI') from exc
     except subprocess.TimeoutExpired as exc:

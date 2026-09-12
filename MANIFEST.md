@@ -1,7 +1,7 @@
 # Distribution Manifest
 
 - Template version: 1.1.0 Stable
-- CLI version: 0.9.0
+- CLI version: 0.10.0
 - Schema version: 1
 - Narrative templates: 34
 - Atomic object types: 12
@@ -14,11 +14,18 @@
 - Terminal SYNC assets: durable binding v1 contract/schema, Git-admin completed store, migration runtime and crash-safe terminalization included in package assets
 - Automatic pickup assets: bounded-cycle contract and OS-neutral pickup runtime included in release/package assets
 - Foreground watcher assets: persistent runtime, watcher contract, lock/state/event/backoff implementation included in release/package assets
+- Windows automatic SYNC assets: external registration runtime, packaged no-console background runner, mockable Task Scheduler XML adapter and Windows automation contract included in release/package assets
 - Adversarial hardening: path/symlink safety, transactional module enable rollback, target-first atomic context budgeting, 8-char random IDs, strict frontmatter parsing, symmetric blueprint conflicts
 
 ## MVP CLI commands
 
-`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including persistent `sync watch`, bounded `sync watch --once`, `sync pull`, `sync intake`, `sync plan`, `sync verify`, `sync finalize`, and `sync migrate-bindings`), `bootstrap`, `prepare-pr`.
+`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including `sync auto install/status/remove`, persistent `sync watch`, bounded `sync watch --once`, `sync pull`, `sync intake`, `sync plan`, `sync verify`, `sync finalize`, and `sync migrate-bindings`), `bootstrap`, `prepare-pr`.
+
+## Windows Automatic SYNC Runtime — Stage 3
+
+Version 0.10.0 adds an external per-project registration and current-user, least-privilege Windows Scheduled Task. Each invocation runs the same-installation `pythonw.exe -m project_system.sync_auto_runner --registration <ID>` no-console action for exactly one existing bounded pickup cycle, then exits; an explicit background context makes every reachable `git.exe`/`gh.exe` child use Windows `CREATE_NO_WINDOW` while foreground commands remain unchanged. Task Scheduler remains cadence/reboot authority and `IgnoreNew` is reinforced by the existing watcher OS lock. Registration is integrity-sealed beneath `%LOCALAPPDATA%\ProjectSystem\watchers\`, task ownership is proven before replacement/removal, and install is idempotent with explicit controlled `--replace` and rollback. Read-only status includes scheduler/registration identity plus advisory state and version/runtime warnings. No canonical semantic edit, verify/finalize, staging, commit, push, GitHub mutation, administrator requirement or arbitrary configured command is introduced. See `SYNC_AUTO_WINDOWS_V1.md`.
+
+Windows automation verification: **362 passed, 2 Windows symlink-permission skips**. Coverage includes install/idempotency/replace/rollback, status and JSON output, missing/damaged state, ownership-safe removal, bounded scheduled runs and locks, semantic Windows XML normalization including the omitted-`RunLevel` `LeastPrivilege` default, exact sanitized mismatch diagnostics, same-installation `pythonw.exe` discovery, strict no-console runner identity/arguments, explicit background propagation to every reachable Git/GitHub child process, preserved foreground behavior and subprocess error/timeout/capture semantics, background exit/error recording, multiple projects, safe registration paths, unchanged foreground watcher behavior, and all Bridge/terminal regressions. Packaged fake-scheduler install/status/one-cycle/remove smoke passed from the isolated 0.10.0 wheel in a Unicode path with spaces; direct installed process probes reported no console for both the `pythonw.exe` runner and a console-subsystem child launched under the background context, while foreground invocation omitted the flag. Wheel and sdist contain the background runner, central process helper and Windows contract. No real Scheduled Task or production project was modified, and live Windows installation remains a separate owner-operated step.
 
 ## Persistent Foreground Watcher — Stage 2A
 

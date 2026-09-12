@@ -6,6 +6,7 @@ import re
 import subprocess
 import uuid
 
+from .process_runner import run_process
 from .sync_planning import SyncPlanError, _write_output
 from .sync_bindings import (
     DURABLE_PACK_ID,
@@ -65,7 +66,7 @@ class SyncPushError(SyncFinalizeError):
 
 
 def _run_git(root, args, *, allow_failure=False, text=True):
-    result = subprocess.run(
+    result = run_process(
         ['git', *args],
         cwd=root,
         capture_output=True,

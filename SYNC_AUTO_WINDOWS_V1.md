@@ -20,6 +20,13 @@ pack creation and deterministic planning remain in the existing pickup stack.
 The scheduled layer makes no semantic edits and never verifies, finalizes,
 stages, commits, pushes, or mutates GitHub.
 
+CLI 0.11 may also run the opt-in Google Workspace branch inside the same bounded
+invocation. OAuth refresh is strictly non-interactive: missing or revoked
+authorization records `google_auth_required` and never opens a browser. The
+branch projects canonical Git to bound Docs, imports Sheet rows only as
+immutable proposals and writes Sheet feedback; it never turns designer text
+into canonical truth. There is still one Scheduled Task and one watcher lock.
+
 ## Commands
 
 ```text

@@ -3,6 +3,7 @@ from datetime import datetime
 from hashlib import sha256
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -15,7 +16,9 @@ import yaml
 from project_system.cli import main
 from project_system.init_project import init_project
 from project_system.objects import create_object
-from project_system.sync_intake import SyncIntakeError, intake_sync
+from project_system.sync_intake import (
+    INTAKE_LOCK_MAGIC, SyncIntakeError, _intake_lock, intake_sync,
+)
 from project_system.sync_planning import SyncPlanError, plan_sync
 from project_system.sync_verification import verify_sync
 from project_system.sync_finalization import finalize_sync
@@ -70,6 +73,12 @@ def canonical(root):
 
 def no_packs(root):
     assert list((root / 'inbox/sync').glob('*.yaml')) == []
+
+
+def intake_lock_metadata(path):
+    raw = path.read_bytes()
+    assert raw.startswith(INTAKE_LOCK_MAGIC)
+    return json.loads(raw[len(INTAKE_LOCK_MAGIC):].decode('utf-8'))
 
 
 def test_file_binding_provenance_and_no_canonical_or_git_writes(project, tmp_path, monkeypatch):
@@ -340,14 +349,139 @@ def test_exclusive_creation_race_never_overwrites(project, monkeypatch):
     assert race_path.read_bytes() == b'other process won'
 
 
-def test_intake_lock_rejects_concurrent_writer(project):
+def test_intake_lock_acquires_releases_and_reuses_persistent_artifact(project):
     root, _, _ = project
     lock = root / '.generated/sync/.intake.lock'
-    lock.parent.mkdir(parents=True)
-    lock.write_bytes(b'other process')
-    with pytest.raises(SyncIntakeError, match='already running'):
-        accept(project)
-    assert lock.read_bytes() == b'other process'
+    with _intake_lock(root):
+        assert lock.is_file()
+    assert lock.is_file()
+    metadata = intake_lock_metadata(lock)
+    assert metadata['kind'] == 'project-system-intake-lock'
+    assert metadata['pid'] == os.getpid()
+    with _intake_lock(root):
+        pass
+    assert intake_lock_metadata(lock)['pid'] == os.getpid()
+
+
+def test_live_intake_lock_is_not_stolen_even_when_artifact_is_old(project):
+    root, _, _ = project
+    lock = root / '.generated/sync/.intake.lock'
+    with _intake_lock(root):
+        os.utime(lock, (1, 1))
+        with pytest.raises(SyncIntakeError, match='already running'):
+            with _intake_lock(root):
+                pytest.fail('live intake lock was stolen')
+
+
+def test_intake_lock_recovers_after_process_crash(project):
+    root, _, _ = project
+    script = (
+        'import os,sys\n'
+        'from pathlib import Path\n'
+        'from project_system.sync_intake import _intake_lock\n'
+        'with _intake_lock(Path(sys.argv[1])):\n'
+        '    os._exit(0)\n'
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', script, str(root)],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    with _intake_lock(root):
+        pass
+    assert intake_lock_metadata(
+        root / '.generated/sync/.intake.lock'
+    )['pid'] == os.getpid()
+
+
+def test_initialized_lock_recovers_after_crash_before_os_lock(project, monkeypatch):
+    from project_system import sync_intake
+
+    root, _, _ = project
+    script = (
+        'import os,sys\n'
+        'from pathlib import Path\n'
+        'from project_system.sync_intake import _publish_initialized_intake_lock\n'
+        'root=Path(sys.argv[1])\n'
+        'lock=root / ".generated/sync/.intake.lock"\n'
+        'lock.parent.mkdir(parents=True, exist_ok=True)\n'
+        'assert _publish_initialized_intake_lock(lock)\n'
+        'os._exit(0)\n'
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', script, str(root)],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    lock = root / '.generated/sync/.intake.lock'
+    assert lock.read_bytes().startswith(INTAKE_LOCK_MAGIC)
+    monkeypatch.setattr(
+        sync_intake, '_legacy_empty_lock_is_orphaned',
+        lambda path: pytest.fail('initialized v1 marker was treated as legacy empty'),
+    )
+    with _intake_lock(root):
+        pass
+    assert intake_lock_metadata(lock)['pid'] == os.getpid()
+
+
+def test_intake_lock_production_path_recovers_after_crash_before_os_lock(
+        project, monkeypatch):
+    from project_system import sync_intake
+
+    root, _, _ = project
+    script = (
+        'import os,sys\n'
+        'from pathlib import Path\n'
+        'from project_system import sync_intake\n'
+        'def crash_before_os_lock(stream):\n'
+        '    os._exit(0)\n'
+        'sync_intake._lock_intake_stream = crash_before_os_lock\n'
+        'with sync_intake._intake_lock(Path(sys.argv[1])):\n'
+        '    os._exit(91)\n'
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', script, str(root)],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    lock = root / '.generated/sync/.intake.lock'
+    assert lock.is_file()
+    assert lock.read_bytes().startswith(INTAKE_LOCK_MAGIC)
+    monkeypatch.setattr(
+        sync_intake, '_legacy_empty_lock_is_orphaned',
+        lambda path: pytest.fail('initialized v1 marker was treated as legacy empty'),
+    )
+    with _intake_lock(root):
+        pass
+    assert intake_lock_metadata(lock)['pid'] == os.getpid()
+
+
+def test_legacy_empty_posix_like_lock_remains_fail_closed(project, monkeypatch):
+    from project_system import sync_intake
+
+    root, _, _ = project
+    lock = root / '.generated/sync/.intake.lock'
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b'')
+    monkeypatch.setattr(
+        sync_intake, '_legacy_empty_lock_is_orphaned', lambda path: False,
+    )
+    with pytest.raises(SyncIntakeError, match='cannot be proven orphaned'):
+        with _intake_lock(root):
+            pytest.fail('ambiguous POSIX legacy marker was accepted')
+    assert lock.read_bytes() == b''
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='safe legacy empty-lock proof uses Windows share modes')
+def test_legacy_empty_stale_intake_lock_is_recovered_on_windows(project):
+    root, _, _ = project
+    lock = root / '.generated/sync/.intake.lock'
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b'')
+    with _intake_lock(root):
+        pass
+    metadata = intake_lock_metadata(lock)
+    assert metadata['kind'] == 'project-system-intake-lock'
 
 
 @pytest.mark.parametrize('which', ['inbox', 'inbox/sync', '.generated', '.generated/sync'])

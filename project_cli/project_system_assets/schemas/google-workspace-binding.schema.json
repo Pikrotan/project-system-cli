@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-system.local/schemas/google-workspace-binding-v1.schema.json",
+  "title": "Project System Google Workspace binding v1",
+  "type": "object",
+  "required": [
+    "schema_version", "record_type", "project_id", "repository",
+    "bound_at", "cli_version", "folder", "resources", "projections", "integrity"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "record_type": {"const": "google_workspace_binding"},
+    "project_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+    "repository": {"type": "string", "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$"},
+    "bound_at": {"type": "string", "format": "date-time"},
+    "cli_version": {"type": "string", "minLength": 1},
+    "folder": {"$ref": "#/$defs/resource"},
+    "resources": {
+      "type": "object",
+      "properties": {
+        "project_overview": {"$ref": "#/$defs/resource"},
+        "design_knowledge": {"$ref": "#/$defs/resource"},
+        "design_changes": {"$ref": "#/$defs/resource"}
+      },
+      "additionalProperties": false
+    },
+    "projections": {
+      "type": "object",
+      "properties": {
+        "project_overview": {"$ref": "#/$defs/projection"},
+        "design_knowledge": {"$ref": "#/$defs/projection"}
+      },
+      "additionalProperties": false
+    },
+    "integrity": {"$ref": "#/$defs/integrity"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "resource": {
+      "type": "object",
+      "required": ["id", "role", "name", "mime_type", "created_at"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{6,256}$"},
+        "role": {"enum": ["workspace_root", "project_overview", "design_knowledge", "design_changes"]},
+        "name": {"type": "string", "minLength": 1},
+        "mime_type": {"type": "string", "minLength": 1},
+        "created_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "projection": {
+      "type": "object",
+      "required": ["source_commit", "source_sha256", "content_sha256", "projected_at"],
+      "properties": {
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "projected_at": {"type": "string", "format": "date-time"}
+      },
+      "additionalProperties": false
+    },
+    "integrity": {
+      "type": "object",
+      "required": ["algorithm", "payload_sha256"],
+      "properties": {
+        "algorithm": {"const": "sha256"},
+        "payload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

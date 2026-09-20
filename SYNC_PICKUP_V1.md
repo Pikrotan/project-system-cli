@@ -25,7 +25,7 @@ Request extraction, schema/target validation, author allowlisting, transport pro
 7. Select at most one Issue and invoke the existing deterministic pull/intake/plan path.
 8. Exit without verification, semantic application, finalization, Git or GitHub mutation.
 
-The existing intake lock spans queue selection through intake/plan for cooperative automatic, manual pull, and direct intake writers. GitHub itself cannot be locked; selected transport is therefore re-fetched and compared before and after intake by the existing pull contract.
+The existing intake lock spans queue selection through intake/plan for cooperative automatic, manual pull, and direct intake writers. It is a non-blocking OS file lock (`msvcrt` on Windows, `flock` on POSIX), so process exit or crash releases ownership even though the diagnostic file persists. A new lock path is published atomically from a fully initialized same-directory temporary file through create-if-absent hard-link publication; its immutable magic prefix distinguishes every v0.11-created artifact from a legacy empty marker before any process can observe the final path. Owner metadata is rewritten only after that prefix, so an interrupted metadata update remains recoverable. PID and acquisition metadata are diagnostic only; liveness never depends on PID reuse or file age. A live lock cannot be stolen. Ambiguous empty POSIX legacy artifacts remain fail-closed; an empty Windows legacy artifact is replaced only after exclusive-handle proof that no legacy owner remains. GitHub itself cannot be locked; selected transport is therefore re-fetched and compared before and after intake by the existing pull contract.
 
 ## Stable results
 
@@ -50,7 +50,7 @@ CLI output always includes `Repository` and `Status`; blocked/no-pending results
 
 ## Write and trust boundary
 
-The only permitted writes are the selected immutable `inbox/sync/<PACK_ID>.yaml`, derived `.generated/sync/<PACK_ID>/` intake/plan/pull reports, and the short-lived cooperative intake lock. There are no canonical knowledge/docs edits, automatic verification/finalization, staging, commit, push, Issue close/comment/label operations, arbitrary commands, or Issue-derived filesystem paths.
+The only permitted writes are the selected immutable `inbox/sync/<PACK_ID>.yaml`, derived `.generated/sync/<PACK_ID>/` intake/plan/pull reports, and the persistent noncanonical intake lock artifact whose OS ownership is short-lived. There are no canonical knowledge/docs edits, automatic verification/finalization, staging, commit, push, Issue close/comment/label operations, arbitrary commands, or Issue-derived filesystem paths.
 
 Author allowlisting proves only configured transport eligibility, not semantic human approval or cryptographic identity. Existing approval validation remains structural.
 

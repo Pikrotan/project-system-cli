@@ -1,12 +1,12 @@
 # Distribution Manifest
 
 - Template version: 1.1.0 Stable
-- CLI version: 0.10.0
+- CLI version: 0.11.0
 - Schema version: 1
 - Narrative templates: 34
 - Atomic object types: 12
 - Blueprint modules: 13
-- JSON schemas: 17
+- JSON schemas: 19
 - Machine assets: packaged in `project_cli/project_system_assets/` for source and wheel installs
 - SYNC PACK assets: v1 contract document and JSON schema included in release artifacts
 - SYNC REQUEST assets: Bridge v1 contract document and shared-definition JSON schema included in release/package assets
@@ -15,11 +15,18 @@
 - Automatic pickup assets: bounded-cycle contract and OS-neutral pickup runtime included in release/package assets
 - Foreground watcher assets: persistent runtime, watcher contract, lock/state/event/backoff implementation included in release/package assets
 - Windows automatic SYNC assets: external registration runtime, packaged no-console background runner, mockable Task Scheduler XML adapter and Windows automation contract included in release/package assets
+- Google Workspace assets: OAuth/DPAPI boundary, Drive/Docs/Sheets adapter, durable workspace/import bindings, deterministic projections, Design Changes intake, architecture and designer guides included in source/wheel/sdist assets
 - Adversarial hardening: path/symlink safety, transactional module enable rollback, target-first atomic context budgeting, 8-char random IDs, strict frontmatter parsing, symmetric blueprint conflicts
 
 ## MVP CLI commands
 
-`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `sync` (including `sync auto install/status/remove`, persistent `sync watch`, bounded `sync watch --once`, `sync pull`, `sync intake`, `sync plan`, `sync verify`, `sync finalize`, and `sync migrate-bindings`), `bootstrap`, `prepare-pr`.
+`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `google` (including `connect/status/disconnect` and `workspace init/status/rebind/sync`), `sync` (including `sync auto install/status/remove`, persistent `sync watch`, bounded `sync watch --once`, `sync pull`, `sync intake`, `sync plan`, `sync verify`, `sync finalize`, and `sync migrate-bindings`), `bootstrap`, `prepare-pr`.
+
+## Google Workspace / Designer Bridge
+
+Version 0.11.0 adds a project-neutral, opt-in Google Workspace made of Project Overview, Design Knowledge and Design Changes resources while preserving Git canonical knowledge as the only SSOT. OAuth Desktop App bootstrap requests only `drive.file`; client/token material is separated and protected with Windows DPAPI outside repositories. Resource IDs and immutable designer imports live in integrity-sealed worktree-specific Git administrative storage. Git-to-Docs projections detect and restore manual drift, while Sheet rows become stable, immutable proposals and never approved canonical truth. A separately human-approved standard SYNC REQUEST can reference a Change ID, after which existing terminal lifecycle evidence drives Sheet feedback. The existing bounded watcher/Windows task gains one non-interactive Google branch without a second daemon/task, browser UI, canonical mutation, staging, commit, push or provider mutation beyond the explicitly bound Workspace resources. See `GOOGLE_WORKSPACE_BRIDGE_V1.md` and `DESIGN_CHANGES_DESIGNER_V1.md`.
+
+Google Workspace verification: focused Google/intake/pickup regression **178 passed, 2 skipped**; targeted intake-lock regression **32 passed**; full release-candidate suite **428 passed, 3 environment-specific skips** (two unavailable Windows symlink/junction privileges and one unavailable DPAPI user profile in the managed test process). A fresh wheel and sdist were built in temporary storage; the installed-wheel smoke verified CLI/runtime metadata `0.11.0`, importability, packaged hardening code/assets, embedded-H1 cleanup and reusable crash-safe intake locking. Separately, the owner-operated real SportOS gate confirmed OAuth/DPAPI, workspace creation, one-way projections and drift restore, Design Changes identity/conflict/recovery, human-approved reviewed-no-change feedback, scheduled background cycles, revoke/reconnect recovery and a clean final worktree. Automated tests and packaging used no production credentials or resources.
 
 ## Windows Automatic SYNC Runtime — Stage 3
 
@@ -73,7 +80,9 @@ Version 0.4.0 adds dry-run `project sync finalize <PACK_PATH|PACK_ID>` plus sepa
 
 ## Deliberately not automated in v1.1
 
-No autonomous approvals, no direct LLM API calls, no live Figma/Google Docs/Sheets sync, no vector DB, no universal semantic code analyzer, no automatic merge to main.
+No autonomous approvals, no direct LLM API calls, no Figma API/image analysis,
+no Google Docs-to-Git canonical import, no vector DB, no universal semantic code
+analyzer, and no automatic merge to main.
 
 ## Security / governance boundary
 

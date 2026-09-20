@@ -9,6 +9,13 @@ project sync watch --interval 120
 
 `project sync watch --once` remains the original single bounded cycle. Persistent mode defaults to 120 seconds and accepts whole-second intervals from 60 through 3600. The foreground command remains attached to the terminal and is not itself a scheduler, service, or daemon. CLI 0.10 reuses this runtime for one-cycle Windows Scheduled Task invocations as documented separately in `SYNC_AUTO_WINDOWS_V1.md`.
 
+CLI 0.11 may add one opt-in Google Workspace branch to this same bounded cycle
+after the GitHub branch is clear. It refreshes Git-to-Docs projections, restores
+projection drift, imports Sheet rows only as immutable proposals outside the
+worktree, and writes operational Sheet feedback. It does not create a second
+watcher or gain canonical/semantic authority. Projects without enabled Google
+configuration follow the original cycle unchanged.
+
 ## Runtime lifecycle
 
 Persistent startup resolves a valid Project System root, discovers the GitHub repository from the sole `origin` fetch URL, and validates the existing GitHub sync/author policy. It then obtains the watcher lock, records startup state/event, and repeatedly invokes the existing `pickup_once` core. Queue parsing, selection, reconciliation, intake and planning are not reimplemented by the watcher.
@@ -19,7 +26,7 @@ Ctrl+C during pickup or waiting records a stopped state and event, releases the 
 
 ## Watcher lock
 
-`.generated/sync/auto/watcher.lock` is a separate runtime-level lock. The process holds a non-blocking OS file lock for its full lifetime (`msvcrt` on Windows and `flock` on POSIX). The file itself may remain after shutdown or a crash; an unlocked file is safely reusable, so no PID-only stale-lock guessing or deletion of another live process's lock is needed. A second foreground or scheduled runtime for the same project/worktree fails clearly. The existing `.generated/sync/.intake.lock` remains responsible for races with manual pull/intake writers.
+`.generated/sync/auto/watcher.lock` is a separate runtime-level lock. The process holds a non-blocking OS file lock for its full lifetime (`msvcrt` on Windows and `flock` on POSIX). The file itself may remain after shutdown or a crash; an unlocked file is safely reusable, so no PID-only stale-lock guessing or deletion of another live process's lock is needed. A second foreground or scheduled runtime for the same project/worktree fails clearly. `.generated/sync/.intake.lock` now uses the same crash-released OS-lock authority for the shorter queue-selection/intake/plan critical section and remains responsible for races with manual pull/intake writers.
 
 ## Disposable state
 

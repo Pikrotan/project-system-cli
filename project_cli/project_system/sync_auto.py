@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import yaml
 
 from . import __version__, sync_pull
 from .process_runner import background_processes
@@ -16,7 +17,7 @@ from .sync_watcher import (
     _append_event, _recover_event_log, _validate_interval, _write_state,
     run_watcher, watcher_lock,
 )
-from .utils import atomic_write_text
+from .utils import atomic_write_text, load_yaml
 
 
 REGISTRATION_ID_RE = re.compile(r'^REG-[0-9a-f]{16}$')
@@ -291,12 +292,36 @@ def _project_binding(root, *, require_gh=False, gh_check=None):
     root = Path(root).resolve()
     try:
         repository = sync_pull.github_repository(root)
-        project_id, _ = sync_pull.pull_policy(root, repository)
-        if require_gh:
+        config = load_yaml(root / 'project.yaml')
+        if not isinstance(config, dict):
+            raise ValueError('project.yaml top-level must be a mapping')
+        external = config.get('external_systems') or {}
+        if not isinstance(external, dict):
+            raise ValueError('external_systems must be a mapping')
+        github = external.get('github') or {}
+        if not isinstance(github, dict):
+            raise ValueError('external_systems.github must be a mapping')
+        github_ready = (
+            github.get('enabled') is True and github.get('mode') == 'sync'
+        )
+        google = external.get('google_workspace') or {}
+        google_ready = isinstance(google, dict) and google.get('enabled') is True
+        if github_ready:
+            project_id, _ = sync_pull.pull_policy(root, repository)
+        elif google_ready:
+            project = config.get('project') or {}
+            if not isinstance(project, dict):
+                raise ValueError('project must be a mapping')
+            project_id = project.get('id')
+            if not isinstance(project_id, str) or not project_id:
+                raise ValueError('project.id is required')
+        else:
+            raise ValueError('neither GitHub SYNC pull nor Google Workspace is enabled')
+        if require_gh and github_ready:
             (gh_check or sync_pull._gh_executable)()
     except (
         sync_pull.SyncPullError, OSError, subprocess.TimeoutExpired,
-        ValueError, TypeError, KeyError,
+        yaml.YAMLError, ValueError, TypeError, KeyError,
     ) as exc:
         raise SyncAutoError(f'automatic SYNC project preflight failed: {exc}') from exc
     return root, project_id, repository

@@ -25,6 +25,10 @@ from .sync_watcher import (
 from .sync_auto import (
     SyncAutoError, install_auto, remove_auto, run_auto, status_auto,
 )
+from .google_credentials import GoogleCredentialManager, GoogleError
+from .google_workspace import (
+    initialize_workspace, rebind_workspace, sync_workspace, workspace_status,
+)
 
 TYPES=list(DIRS)
 
@@ -55,11 +59,34 @@ def main(argv=None):
     q=sp.add_parser('disable'); q.add_argument('module')
     q=sp.add_parser('task'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='implement')
     q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, "auto", "watch", "pull", "intake", "plan", "verify", "finalize", or "migrate-bindings"'); q.add_argument('pack',nargs='?',help='SYNC action, REQUEST/PACK path, or pack_id'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--commit',action='store_true',help='explicitly commit the verified canonical state'); q.add_argument('--push',action='store_true',help='explicitly push an already verified SYNC commit'); q.add_argument('--message',help='custom commit message; valid only with --commit'); q.add_argument('--complete',action='store_true',help='explicitly complete a non-commit GitHub transport outcome'); q.add_argument('--outcome',choices=['reviewed-no-change','rejected','abandoned'],help='terminal outcome; requires --complete'); q.add_argument('--reason',help='required human reason for --complete'); q.add_argument('--apply',action='store_true',help='apply a deterministic sync binding migration audit'); q.add_argument('--plan',action='store_true',help='plan the bound pack after intake/pull'); q.add_argument('--issue',type=int,help='select one GitHub transport Issue; valid only with sync pull'); q.add_argument('--once',action='store_true',help='run exactly one bounded automatic pickup cycle; valid only with sync watch'); q.add_argument('--interval',type=int,help='watcher/scheduler interval in seconds (60..3600, default 120)'); q.add_argument('--replace',action='store_true',help='replace this project automatic SYNC registration after ownership proof'); q.add_argument('--json',dest='json_output',action='store_true',help='emit machine-readable automatic SYNC status'); q.add_argument('--registration',help='validated automatic SYNC registration ID; internal run command only')
+    q=sp.add_parser('google',help='Google Workspace / Designer Bridge')
+    google_commands=q.add_subparsers(dest='google_command',required=True)
+    connect=google_commands.add_parser('connect',help='authorize with Google OAuth Desktop App')
+    connect.add_argument('--credentials',help='path to Google OAuth Desktop App client JSON')
+    google_commands.add_parser('status',help='show protected local authorization status')
+    google_commands.add_parser('disconnect',help='remove protected local Google credentials')
+    workspace=google_commands.add_parser('workspace',help='manage this project Google Workspace')
+    workspace_commands=workspace.add_subparsers(dest='workspace_command',required=True)
+    workspace_commands.add_parser('init',help='create and bind project Google resources')
+    workspace_commands.add_parser('status',help='verify resource binding and projection drift')
+    workspace_commands.add_parser('rebind',help='recover an unambiguous metadata-bound workspace')
+    workspace_commands.add_parser('sync',help='run one deterministic projection/import cycle')
     q=sp.add_parser('bootstrap'); q.add_argument('--budget',choices=['small','medium','large'],default='medium')
     sp.add_parser('prepare-pr')
     args=p.parse_args(argv)
     if args.cmd=='init':
         path=args.path or ('./'+args.name); r=init_project(args.name,path,args.type,args.governance,args.full_docs); print(r); return
+    if args.cmd=='google' and args.google_command in {'connect','status','disconnect'}:
+        try:
+            manager=GoogleCredentialManager()
+            if args.google_command=='connect': report=manager.connect(args.credentials)
+            elif args.google_command=='status': report=manager.status()
+            else: report=manager.disconnect()
+            print(json.dumps(report,sort_keys=True,ensure_ascii=False))
+        except GoogleError as exc:
+            print(f'google {args.google_command} failed [{exc.category}]: {exc}',file=sys.stderr)
+            sys.exit(exc.exit_code)
+        return
     if args.cmd=='sync' and args.target=='auto' and args.pack=='run':
         if not args.registration: p.error('project sync auto run requires --registration REG-ID')
         if args.interval is not None or args.replace or args.json_output or args.once or args.plan or args.issue is not None or args.apply or args.commit or args.push or args.message is not None or args.complete or args.outcome or args.reason: p.error('sync auto run accepts only --registration REG-ID')
@@ -92,6 +119,17 @@ def main(argv=None):
         notes=disable(root,args.module); print('Disabled',args.module); [print(x) for x in notes]
     elif args.cmd=='task':
         out,_=task(root,args.target,args.mode,args.budget,False); print(out)
+    elif args.cmd=='google':
+        action=args.workspace_command
+        try:
+            if action=='init': report=initialize_workspace(root)
+            elif action=='status': report=workspace_status(root)
+            elif action=='rebind': report=rebind_workspace(root)
+            else: report=sync_workspace(root)
+            print(json.dumps(report,sort_keys=True,ensure_ascii=False))
+        except GoogleError as exc:
+            print(f'google workspace {action} failed [{exc.category}]: {exc}',file=sys.stderr)
+            sys.exit(exc.exit_code)
     elif args.cmd=='sync':
         if args.plan and args.target not in {'intake','pull'}: p.error('--plan is valid only with sync intake/pull')
         if args.issue is not None and args.target != 'pull': p.error('--issue is valid only with sync pull')

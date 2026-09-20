@@ -20,7 +20,10 @@ python -m pip install --no-build-isolation -e .
 project --help
 ```
 
-Dependencies: Python 3.11+, PyYAML, jsonschema. `--no-build-isolation` is useful for offline/local installation when build dependencies are already installed.
+Dependencies: Python 3.11+, PyYAML and jsonschema. The optional opt-in Google
+Workspace bridge uses the declared official Google API and OAuth client
+libraries. `--no-build-isolation` is useful for offline/local installation when
+build dependencies are already installed.
 
 ## Minimal flow
 
@@ -36,6 +39,11 @@ project context project --budget small
 ## Important boundaries
 
 The CLI does not call an LLM, approve product decisions on its own, mirror Figma, replace GitHub, or treat generated files as canonical truth. `project sync`, `project task`, and `project bootstrap` prepare deterministic work packs for an external AI/human executor.
+
+The opt-in `project google` surface projects canonical Git knowledge into
+Project Overview and Design Knowledge Docs and imports Design Changes rows as
+immutable, unapproved proposals. See `GOOGLE_WORKSPACE_BRIDGE_V1.md` and the
+designer guide `DESIGN_CHANGES_DESIGNER_V1.md`.
 
 
 ## Stable hardening notes

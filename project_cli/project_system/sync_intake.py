@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import secrets
 import sys
+import tempfile
 
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
@@ -26,6 +27,9 @@ from .utils import distribution_root, load_yaml
 
 LOCAL_PACK_ID = re.compile(r'^SYNC-[0-9]{8}-[0-9a-f]{8}$')
 REQUEST_FIELDS = ('source', 'approval', 'change_class', 'changes', 'expected_targets', 'notes')
+INTAKE_LOCK_KIND = 'project-system-intake-lock'
+INTAKE_LOCK_MAGIC = b'PROJECT-SYSTEM-INTAKE-LOCK-V1\n'
+MAX_INTAKE_LOCK_BYTES = 4096
 
 
 class SyncIntakeError(RuntimeError):
@@ -79,17 +83,209 @@ def _safe_local_path(root, relative):
 
 @contextmanager
 def _intake_lock(root):
+    """Serialize intake with a crash-released OS lock, not file existence."""
     lock = _safe_local_path(root, '.generated/sync/.intake.lock')
-    lock.parent.mkdir(parents=True, exist_ok=True)
     try:
-        stream = lock.open('xb')
-    except FileExistsError as exc:
-        raise SyncIntakeError('intake is already running; inspect .generated/sync/.intake.lock') from exc
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        stream = _open_initialized_intake_lock(root, lock)
+    except SyncIntakeError:
+        raise
+    except OSError as exc:
+        raise SyncIntakeError('cannot open intake lock file') from exc
+
+    primitive = None
     try:
-        with stream:
-            yield
+        current = lock.stat()
+        opened = os.fstat(stream.fileno())
+        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            raise SyncIntakeError('intake lock changed while being opened')
+        primitive = _lock_intake_stream(stream)
+        lock_format = _intake_lock_format(stream)
+        if lock_format is None:
+            raise SyncIntakeError(
+                'intake lock artifact is not a recognized Project System lock; '
+                'refusing unsafe recovery'
+            )
+        if lock_format == 'v1':
+            _write_intake_lock_metadata(stream)
+        yield lock
     finally:
-        lock.unlink()
+        if primitive is not None:
+            try:
+                _unlock_intake_stream(stream, primitive)
+            finally:
+                stream.close()
+        else:
+            stream.close()
+
+
+def _intake_lock_metadata():
+    return {
+        'schema_version': 1,
+        'kind': INTAKE_LOCK_KIND,
+        'pid': os.getpid(),
+        'acquired_at': datetime.now(timezone.utc).isoformat(),
+        'lock_id': secrets.token_hex(8),
+    }
+
+
+def _intake_lock_payload():
+    metadata = json.dumps(
+        _intake_lock_metadata(), sort_keys=True, separators=(',', ':'),
+    ).encode('utf-8')
+    return INTAKE_LOCK_MAGIC + metadata
+
+
+def _publish_initialized_intake_lock(lock):
+    """Atomically publish a non-empty v1 marker without replacing a winner."""
+    fd, temporary = tempfile.mkstemp(
+        prefix='.intake.lock.', suffix='.tmp', dir=str(lock.parent),
+    )
+    temporary = Path(temporary)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            payload = _intake_lock_payload()
+            if stream.write(payload) != len(payload):
+                raise OSError('short intake lock initialization write')
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, lock)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _open_initialized_intake_lock(root, lock):
+    for _ in range(32):
+        if not lock.exists():
+            _publish_initialized_intake_lock(lock)
+        checked = _safe_local_path(root, '.generated/sync/.intake.lock')
+        if checked != lock or not lock.is_file():
+            raise SyncIntakeError('intake lock path is not a safe regular file')
+        before = lock.stat()
+        if before.st_size == 0:
+            if not _legacy_empty_lock_is_orphaned(lock):
+                raise SyncIntakeError(
+                    'legacy empty intake lock cannot be proven orphaned; '
+                    'confirm no old intake is running before removing it'
+                )
+            after = lock.stat()
+            if ((before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+                    or after.st_size != 0):
+                continue
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        stream = lock.open('r+b')
+        current = lock.stat()
+        opened = os.fstat(stream.fileno())
+        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            stream.close()
+            continue
+        return stream
+    raise SyncIntakeError('cannot stabilize intake lock identity after concurrent changes')
+
+
+def _intake_lock_format(stream):
+    stream.seek(0)
+    raw = stream.read(MAX_INTAKE_LOCK_BYTES + 1)
+    if len(raw) > MAX_INTAKE_LOCK_BYTES:
+        return None
+    if raw.startswith(INTAKE_LOCK_MAGIC):
+        return 'v1'
+    try:
+        metadata = json.loads(raw.decode('utf-8'))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if (isinstance(metadata, dict) and metadata.get('schema_version') == 1
+            and metadata.get('kind') == INTAKE_LOCK_KIND):
+        return 'pre-magic-v1'
+    return None
+
+
+def _write_intake_lock_metadata(stream):
+    metadata = json.dumps(
+        _intake_lock_metadata(), sort_keys=True, separators=(',', ':'),
+    ).encode('utf-8')
+    if len(INTAKE_LOCK_MAGIC) + len(metadata) > MAX_INTAKE_LOCK_BYTES:
+        raise SyncIntakeError('intake lock metadata exceeds the size limit')
+    stream.seek(len(INTAKE_LOCK_MAGIC))
+    if stream.write(metadata) != len(metadata):
+        raise OSError('short intake lock metadata write')
+    stream.truncate()
+    stream.flush()
+    os.fsync(stream.fileno())
+
+
+def _lock_intake_stream(stream):
+    stream.seek(0)
+    if os.name == 'nt':
+        import msvcrt
+        try:
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            raise SyncIntakeError('intake is already running; OS lock is held') from exc
+        return 'windows', msvcrt
+    import fcntl
+    try:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        raise SyncIntakeError('intake is already running; OS lock is held') from exc
+    return 'posix', fcntl
+
+
+def _unlock_intake_stream(stream, primitive):
+    kind, module = primitive
+    stream.seek(0)
+    if kind == 'windows':
+        module.locking(stream.fileno(), module.LK_UNLCK, 1)
+    else:
+        module.flock(stream.fileno(), module.LOCK_UN)
+
+
+def _legacy_empty_lock_is_orphaned(path):
+    """Prove that a legacy empty Windows lock has no open owner handle.
+
+    The pre-0.11 lock held an ordinary open file without a kernel byte-range
+    lock. Windows share-mode compatibility lets us prove that no such handle is
+    live. POSIX cannot make the equivalent proof for an unlinked/open inode, so
+    it deliberately fails closed rather than using file age or PID guessing.
+    """
+    if os.name != 'nt':
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    create_file = ctypes.WinDLL('kernel32', use_last_error=True).CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    close_handle = ctypes.WinDLL('kernel32', use_last_error=True).CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    handle = create_file(
+        str(path), 0x80000000 | 0x40000000, 0, None, 3, 0x80, None,
+    )
+    invalid = wintypes.HANDLE(-1).value
+    if handle == invalid:
+        error = ctypes.get_last_error()
+        if error in {32, 33}:  # sharing / lock violation: a legacy owner may be live
+            return False
+        raise OSError(error, 'cannot prove legacy intake lock ownership')
+    try:
+        return True
+    finally:
+        close_handle(handle)
 
 
 def _bound_pack(request, request_hash, project_id, head, pack_id, timestamp, transport=None):

@@ -1,11 +1,13 @@
 """OS-neutral, single bounded automatic SYNC pickup cycle."""
 from pathlib import Path
+import yaml
 
 from . import sync_pull
 from .sync_bindings import SyncBindingError, validate_transactions
 from .sync_intake import SyncIntakeError, _intake_lock, intake_bindings
 from .sync_migration import classify_active_binding
 from .sync_planning import SyncPlanError, _git_status_paths
+from .utils import load_yaml
 
 
 BLOCKED_STATUSES = {
@@ -17,6 +19,10 @@ BLOCKED_STATUSES = {
     'blocked_malformed',
     'blocked_transaction',
     'blocked_transport',
+    'blocked_google_auth',
+    'blocked_google_config',
+    'blocked_google_integrity',
+    'blocked_google_transport',
 }
 
 
@@ -161,7 +167,7 @@ def _pending_queue(root, repository, policy, completed_by_issue):
     return valid[head_number], len(relevant)
 
 
-def pickup_once(root):
+def _github_pickup_once(root):
     """Run exactly one bounded pickup cycle; never apply semantic changes."""
     root = Path(root).resolve()
     repository = None
@@ -245,3 +251,77 @@ def pickup_once(root):
         message = str(exc)
         status = 'blocked_transport' if message.startswith('gh ') or 'GitHub' in message else 'blocked_conflict'
         return _result(repository, status, message)
+
+
+def pickup_once(root, *, google_cycle=None):
+    """Run the existing GitHub pickup and optional Google branch once."""
+    root = Path(root).resolve()
+    try:
+        config = load_yaml(root / 'project.yaml')
+    except (OSError, yaml.YAMLError, ValueError, TypeError) as exc:
+        return _result(None, 'blocked_config', f'project.yaml could not be loaded: {exc}')
+    if not isinstance(config, dict):
+        return _result(None, 'blocked_config', 'project.yaml top-level must be a mapping')
+    external = config.get('external_systems') or {}
+    if not isinstance(external, dict):
+        return _result(None, 'blocked_config', 'external_systems must be a mapping')
+    google = external.get('google_workspace')
+    google_enabled = isinstance(google, dict) and google.get('enabled') is True
+    if not google_enabled:
+        return _github_pickup_once(root)
+
+    github = external.get('github') or {}
+    if not isinstance(github, dict):
+        return _result(None, 'blocked_config', 'external_systems.github must be a mapping')
+    github_enabled = (
+        github.get('enabled') is True and github.get('mode') == 'sync'
+    )
+    if github_enabled:
+        report = _github_pickup_once(root)
+        if report['status'].startswith('blocked_') or report['status'] == 'created':
+            return report
+    else:
+        try:
+            repository = sync_pull.github_repository(root)
+        except (sync_pull.SyncPullError, OSError, ValueError, TypeError) as exc:
+            return _result(None, 'blocked_google_config', str(exc))
+        report = _result(
+            repository, 'no_pending',
+            'GitHub pickup is disabled; Google Workspace branch enabled',
+        )
+
+    if google_cycle is None:
+        from .google_workspace import google_auto_cycle
+        google_cycle = google_auto_cycle
+    google_report = google_cycle(root)
+    google_status = google_report.get('status') if isinstance(google_report, dict) else None
+    blocked = {
+        'google_auth_required': 'blocked_google_auth',
+        'google_config': 'blocked_google_config',
+        'google_binding_integrity': 'blocked_google_integrity',
+        'google_workspace': 'blocked_google_integrity',
+        'google_projection': 'blocked_google_integrity',
+        'google_resource_missing': 'blocked_google_integrity',
+        'google_permission_denied': 'blocked_google_integrity',
+        'google_credential_error': 'blocked_google_auth',
+        'google_design_change': 'blocked_google_integrity',
+        'google_api_error': 'blocked_google_transport',
+        'google_transient': 'blocked_google_transport',
+        'google_rate_limit': 'blocked_google_transport',
+    }
+    if google_status in blocked:
+        return _result(
+            report.get('repository'), blocked[google_status], google_status,
+            google={'status': google_status},
+        )
+    if google_status not in {'processed', 'no_changes'}:
+        return _result(
+            report.get('repository'), 'blocked_google_integrity',
+            'invalid Google automatic cycle result',
+        )
+    combined = dict(report)
+    combined['google'] = google_report
+    if google_status == 'processed' and combined['status'] == 'no_pending':
+        combined['status'] = 'processed'
+        combined['reason'] = 'Google Workspace cycle processed updates'
+    return combined

@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-system.local/schemas/google-design-change-v1.schema.json",
+  "title": "Immutable imported Google Design Change v1",
+  "type": "object",
+  "required": [
+    "schema_version", "record_type", "change_id", "project_id", "repository",
+    "spreadsheet_id", "initial_row_number", "imported_at", "designer_payload",
+    "designer_payload_sha256", "integrity"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "record_type": {"const": "google_design_change_import"},
+    "change_id": {"type": "string", "pattern": "^GDES-[0-9]{8}-[0-9a-f]{8}$"},
+    "project_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+    "repository": {"type": "string", "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$"},
+    "spreadsheet_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{6,256}$"},
+    "initial_row_number": {"type": "integer", "minimum": 2},
+    "imported_at": {"type": "string", "format": "date-time"},
+    "designer_payload": {
+      "type": "object",
+      "required": ["date", "author", "project_area", "screen_flow", "change_type", "what_changed", "why", "figma_url", "logic_changed"],
+      "properties": {
+        "date": {"type": "string"},
+        "author": {"type": "string"},
+        "project_area": {"type": "string"},
+        "screen_flow": {"type": "string"},
+        "change_type": {"type": "string"},
+        "what_changed": {"type": "string", "minLength": 1},
+        "why": {"type": "string"},
+        "figma_url": {"type": "string"},
+        "logic_changed": {"enum": ["Yes", "No", "Unsure"]}
+      },
+      "additionalProperties": false
+    },
+    "designer_payload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "integrity": {
+      "type": "object",
+      "required": ["algorithm", "payload_sha256"],
+      "properties": {
+        "algorithm": {"const": "sha256"},
+        "payload_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

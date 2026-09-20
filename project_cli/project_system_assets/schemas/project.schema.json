@@ -95,6 +95,9 @@
           "properties": {
             "sync_pull": {"$ref": "#/$defs/github_sync_pull"}
           }
+        },
+        "google_workspace": {
+          "$ref": "#/$defs/google_workspace"
         }
       }
     },
@@ -119,6 +122,18 @@
           "items": {"type": "string", "pattern": "^[A-Za-z0-9-]+(?:\\[bot\\])?$"}
         },
         "expected_repository": {"type": "string", "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$"}
+      },
+      "additionalProperties": false
+    },
+    "google_workspace": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "project_overview": {"type": "boolean", "default": true},
+        "design_knowledge": {"type": "boolean", "default": true},
+        "design_changes": {"type": "boolean", "default": true},
+        "projection_drift": {"enum": ["restore"], "default": "restore"}
       },
       "additionalProperties": false
     }

@@ -10,11 +10,12 @@ import json
 import os
 from pathlib import Path
 import time
+import yaml
 
 from . import sync_pull
 from .sync_intake import SyncIntakeError, _safe_local_path
 from .sync_pickup import pickup_once
-from .utils import atomic_write_text
+from .utils import atomic_write_text, load_yaml
 
 
 DEFAULT_INTERVAL_SECONDS = 120
@@ -28,8 +29,12 @@ RETRYABLE_STATUSES = {
     'blocked_dirty',
     'blocked_transaction',
     'blocked_transport',
+    'blocked_google_transport',
 }
-FATAL_STATUSES = {'blocked_config', 'blocked_conflict', 'blocked_malformed'}
+FATAL_STATUSES = {
+    'blocked_config', 'blocked_conflict', 'blocked_malformed',
+    'blocked_google_auth', 'blocked_google_config', 'blocked_google_integrity',
+}
 
 
 class SyncWatcherError(RuntimeError):
@@ -267,8 +272,31 @@ def _append_event(
 def _preflight(root):
     try:
         repository = sync_pull.github_repository(root)
-        project_id, _ = sync_pull.pull_policy(root, repository)
-    except (sync_pull.SyncPullError, OSError, ValueError, TypeError, KeyError) as exc:
+        config = load_yaml(Path(root) / 'project.yaml')
+        if not isinstance(config, dict):
+            raise ValueError('project.yaml top-level must be a mapping')
+        external = config.get('external_systems') or {}
+        if not isinstance(external, dict):
+            raise ValueError('external_systems must be a mapping')
+        github = external.get('github') or {}
+        if not isinstance(github, dict):
+            raise ValueError('external_systems.github must be a mapping')
+        google = external.get('google_workspace') or {}
+        if github.get('enabled') is True and github.get('mode') == 'sync':
+            project_id, _ = sync_pull.pull_policy(root, repository)
+        elif isinstance(google, dict) and google.get('enabled') is True:
+            project = config.get('project') or {}
+            if not isinstance(project, dict):
+                raise ValueError('project must be a mapping')
+            project_id = project.get('id')
+            if not isinstance(project_id, str) or not project_id:
+                raise ValueError('project.id is required')
+        else:
+            raise ValueError('neither GitHub SYNC pull nor Google Workspace is enabled')
+    except (
+        sync_pull.SyncPullError, OSError, yaml.YAMLError,
+        ValueError, TypeError, KeyError,
+    ) as exc:
         raise SyncWatcherError(f'watcher startup configuration failed: {exc}') from exc
     return project_id, repository
 

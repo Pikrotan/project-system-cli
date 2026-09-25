@@ -3,19 +3,30 @@ from .context import build_context
 from .impact import impact
 from .git_helpers import changed_files
 from .object_loader import load_object_layer
+from .skills import default_skill_names_for_target, skills_enabled
+from .utils import load_yaml
 
-def task(root,target,mode='implement',budget='medium',sync=False):
+def task(root,target,mode='implement',budget='medium',sync=False,skills=None):
     imp=impact(root,target)
     allowed=[str(Path('knowledge')/Path(target))] if False else []
     # canonical object file + deterministic impact docs; executor may request scope expansion rather than editing outside this set
     objs=load_object_layer(root).objects
-    if target in objs: allowed.append(str(objs[target]['path'].relative_to(root)))
+    if target in objs: allowed.append(objs[target]['path'].relative_to(root).as_posix())
     allowed += [x for x in imp['check_docs'] if (Path(root)/x).exists()]
     kind='sync' if sync else 'task'
-    return build_context(root,target,budget,mode,allowed_write_set=list(dict.fromkeys(allowed)),kind=kind)
+    selected=list(skills or [])
+    config=load_yaml(Path(root)/'project.yaml')
+    if skills_enabled(config):
+        selected += default_skill_names_for_target(
+            objs[target]['data'],mode=mode,sync=sync,config=config,
+        )
+    return build_context(root,target,budget,mode,allowed_write_set=list(dict.fromkeys(allowed)),kind=kind,skill_names=list(dict.fromkeys(selected)))
 
-def bootstrap(root,budget='medium'):
-    return build_context(root,'bootstrap',budget,'sync',allowed_write_set=['docs/**','knowledge/**','inbox/**'],kind='bootstrap')
+def bootstrap(root,budget='medium',skills=None):
+    selected=list(skills or [])
+    if skills_enabled(load_yaml(Path(root)/'project.yaml')):
+        selected.append('knowledge-sync')
+    return build_context(root,'bootstrap',budget,'sync',allowed_write_set=['docs/**','knowledge/**','inbox/**'],kind='bootstrap',skill_names=list(dict.fromkeys(selected)))
 
 def prepare_pr(root):
     from .validation import validate, counts

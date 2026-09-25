@@ -1,6 +1,7 @@
 # Workflow
 
 > Living narrative document. Keep this concise; atomic lifecycle facts belong in `knowledge/`.
+> Explain the project's human workflow map here. Reusable agent procedures belong in registered project Skills, and deterministic checks belong in the CLI.
 
 ## Idea and Discussion
 

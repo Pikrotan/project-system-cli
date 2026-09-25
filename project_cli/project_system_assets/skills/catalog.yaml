@@ -1,0 +1,102 @@
+schema_version: 1
+profile: project-system-skills-v1
+skills:
+  knowledge-sync:
+    max_writes:
+      - knowledge/**
+      - docs/**
+      - inbox/**
+    capabilities:
+      - project.context
+      - project.impact
+      - project.validate
+      - project.generate
+      - project.sync.intake
+      - project.sync.plan
+      - project.sync.verify
+      - project.sync.finalize.prepare
+  decision-management:
+    max_writes:
+      - knowledge/decisions/**
+      - knowledge/questions/**
+      - docs/00_CURRENT_STATE.md
+      - docs/02_SCOPE.md
+      - docs/03_PRODUCT.md
+      - docs/04_ARCHITECTURE.md
+      - docs/05_ROADMAP.md
+      - docs/10_DECISION_PROCESS.md
+    capabilities:
+      - project.new
+      - project.context
+      - project.impact
+      - project.validate
+      - project.generate
+  requirements-management:
+    max_writes:
+      - knowledge/requirements/**
+      - knowledge/features/**
+      - knowledge/questions/**
+      - docs/02_SCOPE.md
+      - docs/03_PRODUCT.md
+      - docs/05_ROADMAP.md
+      - docs/product/**
+    capabilities:
+      - project.new
+      - project.context
+      - project.impact
+      - project.validate
+      - project.generate
+  architecture-impact:
+    max_writes:
+      - knowledge/decisions/**
+      - knowledge/requirements/**
+      - knowledge/questions/**
+      - knowledge/risks/**
+      - knowledge/debts/**
+      - docs/04_ARCHITECTURE.md
+      - docs/07_CONTEXT_MAP.md
+      - docs/technical/**
+    capabilities:
+      - project.new
+      - project.context
+      - project.impact
+      - project.validate
+      - project.generate
+  implementation-plan:
+    max_writes: []
+    capabilities:
+      - project.context
+      - project.impact
+      - project.validate
+  project-validation:
+    max_writes: []
+    capabilities:
+      - project.validate
+      - project.generate
+      - project.health
+  release-check:
+    max_writes: []
+    capabilities:
+      - project.validate
+      - project.generate
+      - project.health
+      - project.prepare-pr
+  design-handoff:
+    max_writes:
+      - inbox/design/**
+      - inbox/sync/**
+      - knowledge/design_changes/**
+      - knowledge/screens/**
+      - knowledge/flows/**
+      - knowledge/questions/**
+      - docs/design/**
+      - docs/product/**
+    capabilities:
+      - project.context
+      - project.impact
+      - project.validate
+      - project.generate
+      - project.sync.plan
+      - project.sync.verify
+      - project.google.workspace.status
+      - project.google.workspace.sync

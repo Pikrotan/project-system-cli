@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project System Skills registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile", "skills"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "profile": {"const": "project-system-skills-v1"},
+    "skills": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["max_writes", "capabilities"],
+        "properties": {
+          "max_writes": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1, "maxLength": 512}
+          },
+          "capabilities": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "project.new",
+                "project.context",
+                "project.impact",
+                "project.validate",
+                "project.generate",
+                "project.health",
+                "project.prepare-pr",
+                "project.sync.intake",
+                "project.sync.plan",
+                "project.sync.verify",
+                "project.sync.finalize.prepare",
+                "project.google.workspace.status",
+                "project.google.workspace.sync"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,6 +1,7 @@
 # Decision Process
 
 > Living narrative document. Keep this concise; atomic lifecycle facts belong in `knowledge/`.
+> Explain the human decision map and authority; the decision-management Skill only orchestrates work inside it.
 
 ## Proposal Sources
 

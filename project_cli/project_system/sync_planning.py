@@ -16,6 +16,7 @@ from .ids import PREFIX
 from .impact import impact, impact_docs_for_data
 from .object_loader import TYPE_DIRECTORIES, load_object_layer
 from .schemas import validate_object_schema
+from .skills import SkillError, skill_evidence, skills_enabled, sync_skill_names
 from .utils import ID_RE, atomic_write_text, distribution_root, load_yaml
 from .validation import validate
 
@@ -358,7 +359,7 @@ def artifact_integrity_block(plan, manifest):
     }
 
 
-def _context_text(pack, pack_text, manifest, root, object_paths, narrative_paths):
+def _context_text(pack, pack_text, manifest, root, object_paths, narrative_paths, skill_records=None):
     lines = [
         '# SYNC Plan Context',
         '',
@@ -376,6 +377,15 @@ def _context_text(pack, pack_text, manifest, root, object_paths, narrative_paths
     lines.extend(f'- `{path}`' for path in manifest['allowed_write_set'])
     if not manifest['allowed_write_set']:
         lines.append('- _None. Proposals and unresolved items do not authorize canonical writes._')
+    if skill_records:
+        lines.extend(['', '## Selected Project Skills', ''])
+        for record in skill_records.values():
+            lines.extend([
+                f"### `{record.name}`",
+                '',
+                record.content.rstrip(),
+                '',
+            ])
     lines.extend(['', '## Unresolved / Proposal Items', ''])
     if manifest['unresolved_proposal_items']:
         for item in manifest['unresolved_proposal_items']:
@@ -610,7 +620,12 @@ def prepare_sync_plan(root, pack_path, pack, pack_text, pack_bytes, *, require_c
                 'path': normalized,
                 'exists': True,
             })
-            planned.update({'object_id': target_id, 'path': normalized})
+            planned.update({
+                'object_id': target_id,
+                'path': normalized,
+                'object_type': candidate_data.get('type'),
+                'domain': candidate_data.get('domain'),
+            })
             if kind == 'update_object':
                 planned['patch'] = change['patch']
             else:
@@ -667,6 +682,31 @@ def prepare_sync_plan(root, pack_path, pack, pack_text, pack_bytes, *, require_c
             f'expected_targets mismatch: missing={missing}, unexpected={unexpected}'
         )
 
+    skills_evidence = None
+    selected_skill_records = {}
+    if skills_enabled(config):
+        try:
+            selected_names = sync_skill_names(planned_changes, config)
+            skills_evidence, selected_skill_records = skill_evidence(
+                root,
+                selected_names,
+                sorted(allowed_write_set),
+                sorted(allowed_write_set),
+            )
+            skills_evidence['task_write_scope'] = {
+                'canonical': sorted(allowed_write_set),
+                'derived': [f'.generated/sync/{pack["pack_id"]}/**'],
+            }
+        except SkillError as exc:
+            raise SyncPlanError(f'Skills authorization failed: {exc}') from exc
+        uncovered = sorted(
+            allowed_write_set - set(skills_evidence['effective_write_scope'])
+        )
+        if uncovered:
+            raise SyncPlanError(
+                'canonical targets lack selected Skill authorization: ' + ', '.join(uncovered)
+            )
+
     content_hash = sha256(pack_bytes).hexdigest()
     output = _safe_output_dir(root, pack['pack_id'])
     existing_manifest_path = output / 'manifest.json'
@@ -712,6 +752,9 @@ def prepare_sync_plan(root, pack_path, pack, pack_text, pack_bytes, *, require_c
         'unresolved_proposal_items': unresolved_items,
         'ignored_untracked_baseline': ignored_untracked_baseline,
     }
+    if skills_evidence is not None:
+        manifest.update(skills_evidence)
+        plan.update(skills_evidence)
     integrity = artifact_integrity_block(plan, manifest)
     plan['artifact_integrity'] = integrity
     manifest['artifact_integrity'] = integrity
@@ -722,5 +765,6 @@ def prepare_sync_plan(root, pack_path, pack, pack_text, pack_bytes, *, require_c
         root,
         object_context_paths,
         narrative_context_paths,
+        selected_skill_records,
     )
     return output, manifest, plan, context

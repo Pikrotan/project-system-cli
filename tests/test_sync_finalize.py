@@ -125,6 +125,8 @@ def test_successful_dry_run_creates_no_commit(tmp_path):
     assert report['push_requested'] is False
     assert report['semantic_meaning_verified_by_cli'] is False
     assert report['human_semantic_approval_required_before_commit'] is True
+    assert report['selected_skills']
+    assert report['skills_registry_sha256']
     assert _git(root, 'rev-parse', 'HEAD') == head
     assert _git(root, 'diff', '--cached', '--name-only') == ''
     assert {'finalization.json', 'finalization.md'} <= {item.name for item in output.iterdir()}

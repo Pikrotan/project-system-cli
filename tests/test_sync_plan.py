@@ -1,9 +1,11 @@
+from hashlib import sha256
 from pathlib import Path
 import subprocess
 
 import pytest
 import yaml
 
+import project_system.sync_planning as sync_planning_module
 from project_system.cli import main
 from project_system.init_project import init_project
 from project_system.objects import create_object
@@ -152,6 +154,11 @@ def test_valid_pack_supports_all_change_kinds(tmp_path):
     assert manifest['protected_paths']
     assert manifest['out_of_scope_paths']
     assert manifest['warnings']
+    assert {item['name'] for item in manifest['selected_skills']} >= {
+        'knowledge-sync', 'requirements-management'
+    }
+    assert manifest['skills_registry_sha256']
+    assert set(manifest['effective_write_scope']) == set(manifest['allowed_write_set'])
     assert str(feature_path.relative_to(root)).replace('\\', '/') in manifest['allowed_write_set']
     assert str(requirement_path.relative_to(root)).replace('\\', '/') in manifest['allowed_write_set']
     assert f'knowledge/features/{new_id}-approved-feature.md' in manifest['allowed_write_set']
@@ -160,6 +167,38 @@ def test_valid_pack_supports_all_change_kinds(tmp_path):
         'proposal',
         'unresolved',
     }
+
+
+def test_sync_context_renders_same_skill_snapshot_bound_to_hash(tmp_path, monkeypatch):
+    root = init_project('Demo', tmp_path / 'snapshot')
+    _, object_id = create_object(root, 'feature', 'Search', 'product', 'owner')
+    head = _commit_project(root)
+    pack = _pack(root, head, [_update_change(object_id)], [object_id])
+    pack_path = _write_pack(root, pack)
+    skill = root / '.agents' / 'skills' / 'knowledge-sync' / 'SKILL.md'
+    initial_bytes = skill.read_bytes()
+    initial_text = initial_bytes.decode('utf-8')
+    replacement = initial_text.replace('# Knowledge Sync', '# Replaced After Snapshot', 1)
+    original = sync_planning_module.skill_evidence
+
+    def replace_after_snapshot(*args, **kwargs):
+        result = original(*args, **kwargs)
+        skill.write_text(replacement, encoding='utf-8')
+        return result
+
+    monkeypatch.setattr(
+        sync_planning_module,
+        'skill_evidence',
+        replace_after_snapshot,
+    )
+
+    output, manifest = plan_sync(root, pack_path)
+    rendered = (output / 'context.md').read_text(encoding='utf-8')
+    selected = {item['name']: item for item in manifest['selected_skills']}
+
+    assert selected['knowledge-sync']['sha256'] == sha256(initial_bytes).hexdigest()
+    assert '# Knowledge Sync' in rendered
+    assert '# Replaced After Snapshot' not in rendered
 
 
 def test_malformed_schema_is_rejected_without_output(tmp_path):

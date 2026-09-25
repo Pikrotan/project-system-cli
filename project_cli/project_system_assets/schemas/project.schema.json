@@ -65,6 +65,10 @@
         },
         "schema_version": {
           "const": 1
+        },
+        "skills_schema_version": {
+          "type": "integer",
+          "const": 1
         }
       },
       "additionalProperties": true

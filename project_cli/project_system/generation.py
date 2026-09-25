@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 from .graph import build_graph
 from .validation import validate, counts
+from .skills import inspect_skill_layer
 
 
 class GenerationBlockedError(RuntimeError):
@@ -29,6 +30,19 @@ def generate(root):
         title=next((line[2:].strip() for line in p.read_text(encoding='utf-8').splitlines() if line.startswith('# ')),p.stem)
         project_rows.append(f'| {p.relative_to(root)} | narrative | {title} | active |')
     (base/'indexes'/'PROJECT_MAP.md').write_text('# Project Map\n\n> Generated. Do not edit manually.\n\n'+'\n'.join(project_rows)+'\n',encoding='utf-8')
+    skill_layer=inspect_skill_layer(root)
+    if skill_layer.active:
+        skill_rows=['| Skill | Description | Max writes | Capabilities |','|---|---|---|---|']
+        for name,record in sorted(skill_layer.records.items()):
+            skill_rows.append(
+                f"| {name} | {record.description.replace('|','/')} | "
+                f"{', '.join(record.max_writes) or 'none'} | "
+                f"{', '.join(record.capabilities) or 'none'} |"
+            )
+        (base/'indexes'/'SKILLS.md').write_text(
+            '# Project Skills\n\n> Generated from `.project/skills.yaml` and project Skill entrypoints. Do not edit manually.\n\n'
+            +'\n'.join(skill_rows)+'\n',encoding='utf-8'
+        )
     graph={'nodes':[{'id':oid,'type':v['data'].get('type'),'status':v['data'].get('status')} for oid,v in sorted(objs.items())],'edges':edges,'reverse':dict(reverse)}
     (base/'graphs'/'DEPENDENCY_GRAPH.json').write_text(json.dumps(graph,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
     (base/'graphs'/'TRACEABILITY.json').write_text(json.dumps({'edges':edges},indent=2,ensure_ascii=False)+'\n',encoding='utf-8')

@@ -10,6 +10,7 @@
 6. Git / PR / Human Approval Governance
 7. External-system references and projections
 8. Drift / validation / code-derived reference boundary
+9. Portable project Skills / bounded semantic orchestration
 
 ## Fundamental rule
 
@@ -21,3 +22,5 @@ The distribution and concrete project are separate: CLI and packaged machine ass
 ## Distribution packaging boundary
 
 Machine assets are canonical inside the installable `project_system_assets` Python package. A normal wheel install therefore does not depend on the original source checkout path. Concrete projects still receive only materialized active project files.
+
+Project Skills live in `.agents/skills/`, are registered by `.project/skills.yaml`, and orchestrate repeatable semantic work without owning facts, policy, schemas, approval or deterministic implementation. See `SKILLS_ARCHITECTURE_V1.md`.

@@ -21,6 +21,11 @@ Design Changes row
 Figma remains visual truth. Version 0.11.0 stores and projects canonical Figma
 URLs but has no Figma API, image or pixel integration.
 
+In a Skills-aware project, enabling this design integration also requires the
+project-local `design-handoff` Skill. That Skill coordinates the existing
+proposal and SYNC boundaries; it does not grant provider mutation, approve a
+row, or turn Google/Figma content into canonical truth.
+
 ## Configuration
 
 Only declarative enablement belongs in `project.yaml`:

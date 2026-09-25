@@ -37,6 +37,7 @@ from project_system.google_workspace import (
 from project_system.google_projection import build_projection
 from project_system.init_project import init_project
 from project_system.objects import create_object
+from project_system.skills import materialize_skill_layer
 from project_system.schemas import validate_project_schema
 from project_system.sync_pickup import pickup_once
 from project_system.sync_auto import SyncAutoError, _project_binding
@@ -85,6 +86,7 @@ def project_fixture(tmp_path, *, google=True, github=False):
             sync_pull={'allowed_authors': ['owner'], 'expected_repository': REPOSITORY},
         )
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding='utf-8')
+    materialize_skill_layer(root, config)
     (root / 'docs/01_VISION.md').write_text(
         '# Vision\n\nCanonical product value.\n', encoding='utf-8',
     )

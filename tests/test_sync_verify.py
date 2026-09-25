@@ -116,6 +116,9 @@ def test_valid_allowed_slugged_edit_and_no_commit(tmp_path):
     assert report['atomic_object_lifecycle'][0]['action'] == 'updated'
     assert report['semantic_meaning_verified'] is False
     assert report['human_semantic_review_required'] is True
+    assert report['selected_skills']
+    assert report['skills_registry_sha256']
+    assert report['verified_working_tree_state']['selected_skills'] == report['selected_skills']
     assert _git(root, 'rev-parse', 'HEAD') == head
     assert {'verification.json', 'verification.md', 'diff-summary.md'} <= {
         item.name for item in output.iterdir()

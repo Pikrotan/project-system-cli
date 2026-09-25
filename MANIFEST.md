@@ -1,12 +1,13 @@
 # Distribution Manifest
 
 - Template version: 1.1.0 Stable
-- CLI version: 0.11.0
+- CLI version: 0.12.0
 - Schema version: 1
 - Narrative templates: 34
 - Atomic object types: 12
 - Blueprint modules: 13
-- JSON schemas: 19
+- JSON schemas: 20
+- Packaged project Skills: 8 entrypoints (7 core, 1 conditional design handoff)
 - Machine assets: packaged in `project_cli/project_system_assets/` for source and wheel installs
 - SYNC PACK assets: v1 contract document and JSON schema included in release artifacts
 - SYNC REQUEST assets: Bridge v1 contract document and shared-definition JSON schema included in release/package assets
@@ -16,11 +17,18 @@
 - Foreground watcher assets: persistent runtime, watcher contract, lock/state/event/backoff implementation included in release/package assets
 - Windows automatic SYNC assets: external registration runtime, packaged no-console background runner, mockable Task Scheduler XML adapter and Windows automation contract included in release/package assets
 - Google Workspace assets: OAuth/DPAPI boundary, Drive/Docs/Sheets adapter, durable workspace/import bindings, deterministic projections, Design Changes intake, architecture and designer guides included in source/wheel/sdist assets
+- Skills Architecture assets: v1 contract, strict registry schema, catalog, 8 portable Skill entrypoints, stock-v0.11 migration identities and deterministic validation/migration runtime included in source/wheel/sdist assets
 - Adversarial hardening: path/symlink safety, transactional module enable rollback, target-first atomic context budgeting, 8-char random IDs, strict frontmatter parsing, symmetric blueprint conflicts
 
-## MVP CLI commands
+## CLI commands
 
-`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `google` (including `connect/status/disconnect` and `workspace init/status/rebind/sync`), `sync` (including `sync auto install/status/remove`, persistent `sync watch`, bounded `sync watch --once`, `sync pull`, `sync intake`, `sync plan`, `sync verify`, `sync finalize`, and `sync migrate-bindings`), `bootstrap`, `prepare-pr`.
+`init`, `new`, `validate`, `generate`, `context`, `impact`, `health`, `modules`, `enable`, `disable`, `task`, `google` (including `connect/status/disconnect` and `workspace init/status/rebind/sync`), `sync` (including `sync auto install/status/remove`, persistent `sync watch`, bounded `sync watch --once`, `sync pull`, `sync intake`, `sync plan`, `sync verify`, `sync finalize`, and `sync migrate-bindings`), `bootstrap`, `skills` (`list`, `validate`, and dry-run-first `install [--apply]`), `prepare-pr`.
+
+## Skills Architecture v1
+
+Version 0.12.0 adds a project-local orchestration layer at `.agents/skills/<name>/SKILL.md`, registered by `.project/skills.yaml`. Fresh projects receive seven core Skills; `design-handoff` is conditional on an enabled design integration. Context, task, knowledge-bootstrap and new deterministic SYNC evidence can bind immutable selected-Skill snapshots and the intersection of Skill ceilings, task/SYNC scope and governance authorization. Skills cannot approve meaning changes, execute arbitrary registry commands, bypass protected roots, make `.generated/**` semantic, or grant external-provider authority. Explicit dry-run-first migration upgrades proven stock v0.11 constitutions transactionally while genuine legacy v0.11 projects and complete legacy artifacts remain compatible. See `SKILLS_ARCHITECTURE_V1.md`.
+
+Skills release verification: full final suite **491 passed, 3 environment-specific skips, 0 failed in 360.49s**. The skips are the existing unavailable Windows symlink/junction privilege cases and the unavailable DPAPI user profile in the managed test process. Source CLI/runtime reports `0.12.0`; wheel/sdist and installed-wheel verification are recorded in the release-preparation report.
 
 ## Google Workspace / Designer Bridge
 

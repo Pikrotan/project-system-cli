@@ -1,6 +1,7 @@
 # Documentation Process
 
 > Living narrative document. Keep this concise; atomic lifecycle facts belong in `knowledge/`.
+> Describe documentation ownership and handoffs, not step-by-step Skill or schema procedures.
 
 ## Inputs
 

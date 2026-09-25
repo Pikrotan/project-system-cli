@@ -212,6 +212,15 @@ def _load_verification(output, plan):
         'base_commit': plan['base_commit'],
         'allowed_write_set': plan['allowed_write_set'],
     }
+    for field in (
+        'selected_skills',
+        'skills_registry_sha256',
+        'task_write_scope',
+        'effective_write_scope',
+        'skill_write_authorizations',
+    ):
+        if field in plan:
+            comparisons[field] = plan[field]
     for field, expected_value in comparisons.items():
         if report.get(field) != expected_value:
             raise SyncFinalizeIntegrityError(
@@ -312,7 +321,7 @@ def _base_report(integrity, verification, preflight, commit_requested, push_requ
         warnings.append('current branch has no configured upstream')
     if not verified_paths:
         warnings.append('verification contains no canonical changes to commit')
-    return {
+    report = {
         'schema_version': 1,
         'pack_id': integrity['plan']['pack_id'],
         'pack_hash': integrity['plan']['pack_content_sha256'],
@@ -344,6 +353,16 @@ def _base_report(integrity, verification, preflight, commit_requested, push_requ
         'errors': [],
         'warnings': warnings,
     }
+    for field in (
+        'selected_skills',
+        'skills_registry_sha256',
+        'task_write_scope',
+        'effective_write_scope',
+        'skill_write_authorizations',
+    ):
+        if field in integrity['plan']:
+            report[field] = integrity['plan'][field]
+    return report
 
 
 def _markdown_report(report):

@@ -94,7 +94,7 @@ def test_id_slug_filename_is_valid_and_transparent_to_consumers(tmp_path):
     assert layer.objects[object_id]['path'] == path
     assert object_id in graph
     assert object_id in context_manifest['included_objects']
-    assert str(path.relative_to(root)) in task_manifest['allowed_write_set']
+    assert path.relative_to(root).as_posix() in task_manifest['allowed_write_set']
     assert object_id in (generated / 'indexes' / 'FEATURES.md').read_text(encoding='utf-8')
     assert str(path.relative_to(root)) in (generated / 'indexes' / 'PROJECT_MAP.md').read_text(encoding='utf-8')
 
@@ -176,7 +176,7 @@ def test_task_and_sync_target_loaded_markdown_object(tmp_path, sync):
     _, manifest = task(root, object_id, 'sync' if sync else 'implement', 'small', sync)
 
     assert object_id in manifest['included_objects']
-    assert str(object_path.relative_to(root)) in manifest['allowed_write_set']
+    assert object_path.relative_to(root).as_posix() in manifest['allowed_write_set']
 
 
 def test_validate_cli_prints_recognized_object_counts(tmp_path, monkeypatch, capsys):

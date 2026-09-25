@@ -5,6 +5,7 @@ from .schemas import validate_object_schema, validate_project_schema
 from .graph import extract_refs, dependency_cycles
 from .objects import DIRS
 from .object_loader import load_object_layer
+from .skills import inspect_skill_layer
 
 BAD_DEP_STATUSES={'deprecated','removed','rejected','superseded','cancelled'}
 
@@ -12,6 +13,7 @@ def validate(root):
     issues=[]
     cfg=load_yaml(Path(root)/'project.yaml')
     for m in validate_project_schema(cfg): issues.append(('BLOCKING','project.yaml',m))
+    issues.extend(inspect_skill_layer(root,cfg).issues)
     layer=load_object_layer(root)
     for p in layer.unsupported_paths:
         issues.append(('ERROR',str(p.relative_to(root)),'unsupported atomic object format; use .md with YAML frontmatter and Markdown body'))
@@ -42,7 +44,7 @@ def validate(root):
                 issues.append(('WARNING',d.get('id','?'),f'current object depends on non-current {dep} ({objmap[dep]["data"].get("status")})'))
     for cyc in dependency_cycles(root): issues.append(('ERROR','dependency_graph','cycle: '+' -> '.join(cyc)))
     active_decisions=[d for _,d in objects if d.get('type')=='decision' and d.get('status')=='active']
-    if active_decisions and cfg.get('validation',{}).get('human_approval_checks',True):
+    if active_decisions and isinstance(cfg,dict) and cfg.get('validation',{}).get('human_approval_checks',True):
         mode=cfg.get('governance_mode','solo')
         if mode=='solo':
             msg='approval metadata is structurally valid only; solo HITL is procedural and cannot be proven by the local validator'

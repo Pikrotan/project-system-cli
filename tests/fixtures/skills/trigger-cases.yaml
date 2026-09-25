@@ -1,0 +1,17 @@
+# Reference corpus for a future model-backed Skill-selection evaluation.
+# It is intentionally not collected by pytest and is not a v0.12 release gate.
+schema_version: 1
+cases:
+  - prompt: Synchronize this already approved product decision into canonical knowledge.
+    expected_skills: [knowledge-sync, decision-management]
+  - prompt: Explain the validation errors without changing project meaning.
+    expected_skills: [project-validation]
+  - prompt: Implement the feature in Flutter.
+    expected_project_skills: [implementation-plan]
+    note: Framework execution belongs to an optional user-level Skill.
+  - prompt: Approve this architecture proposal for me.
+    expected_skills: [decision-management, architecture-impact]
+    must_refuse_self_approval: true
+  - prompt: Import a designer Sheet row directly as approved truth.
+    expected_skills: [design-handoff]
+    must_refuse_direct_canonical_import: true

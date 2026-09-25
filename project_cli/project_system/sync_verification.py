@@ -11,6 +11,7 @@ from .frontmatter import StrictSafeLoader, _reject_aliases, read_object
 from .generation import GenerationBlockedError, generate
 from .graph import extract_refs
 from .object_loader import load_object_layer
+from .skills import SkillError, project_is_skills_era, verify_skill_evidence
 from .sync_planning import (
     PACK_ID_RE,
     PACK_SUFFIXES,
@@ -256,6 +257,22 @@ def _verify_artifact_pair(plan, manifest, expected_pack_id):
         'unresolved_proposal_items',
         'ignored_untracked_baseline',
     ]
+    skill_fields = [
+        'selected_skills',
+        'skills_registry_sha256',
+        'task_write_scope',
+        'effective_write_scope',
+        'skill_write_authorizations',
+    ]
+    skill_presence = {
+        field
+        for field in skill_fields
+        if field in plan or field in manifest
+    }
+    if skill_presence:
+        if any(field not in plan or field not in manifest for field in skill_fields):
+            raise SyncIntegrityError('plan/manifest Skills evidence is incomplete')
+        shared_fields.extend(skill_fields)
     for field in shared_fields:
         if plan.get(field) != manifest.get(field):
             raise SyncIntegrityError(f'plan/manifest mismatch for {field}')
@@ -300,6 +317,33 @@ def _verify_artifact_pair(plan, manifest, expected_pack_id):
     derived_allowed.update(path for path in impacted if isinstance(path, str))
     if set(allowed) != derived_allowed:
         raise SyncIntegrityError('allowed_write_set is inconsistent with the validated plan targets')
+
+
+def _base_project_requires_skills(root, base_commit):
+    """Classify the plan's trusted base project, never the mutable worktree config."""
+    result = _git(
+        root,
+        ['show', f'{base_commit}:project.yaml'],
+        text=True,
+        allow_failure=True,
+    )
+    if result.returncode:
+        raise SyncIntegrityError('cannot read project.yaml from the plan base_commit')
+    try:
+        config = yaml.load(result.stdout, Loader=StrictSafeLoader)
+    except Exception as exc:
+        raise SyncIntegrityError(
+            f'cannot parse project.yaml from the plan base_commit: {exc}'
+        ) from exc
+    if not isinstance(config, dict):
+        raise SyncIntegrityError(
+            'project.yaml from the plan base_commit must be a mapping/object'
+        )
+    if not isinstance(config.get('tooling'), dict):
+        raise SyncIntegrityError(
+            'project.yaml tooling from the plan base_commit must be a mapping/object'
+        )
+    return project_is_skills_era(config)
 
 
 def _selector_is_path(selector):
@@ -375,6 +419,8 @@ def _resolve_integrity_inputs(root, selector, *, require_base_head=True):
         config = load_yaml(root / 'project.yaml')
     except Exception as exc:
         raise SyncIntegrityError(f'cannot read project.yaml: {exc}') from exc
+    if not isinstance(config, dict):
+        raise SyncIntegrityError('project.yaml top-level must be a mapping/object')
     project_id = config.get('project', {}).get('id')
     if pack['project_id'] != project_id:
         raise SyncIntegrityError(
@@ -403,6 +449,14 @@ def _resolve_integrity_inputs(root, selector, *, require_base_head=True):
         allowed_paths.append(normalized)
     if allowed_paths != plan['allowed_write_set']:
         raise SyncIntegrityError('allowed_write_set paths are not normalized')
+    try:
+        verify_skill_evidence(
+            root,
+            plan,
+            skills_required=_base_project_requires_skills(root, plan['base_commit']),
+        )
+    except SkillError as exc:
+        raise SyncIntegrityError(f'Skills evidence verification failed: {exc}') from exc
     for item in plan['ignored_untracked_baseline']:
         try:
             normalized = _safe_git_path(root, item['path'])
@@ -680,7 +734,7 @@ def _base_report(integrity, changes, scope):
         warnings.append(
             'allowed paths without a detected change: ' + ', '.join(unchanged_allowed)
         )
-    return {
+    report = {
         'schema_version': 1,
         'pack_id': plan['pack_id'],
         'pack_content_sha256': plan['pack_content_sha256'],
@@ -711,6 +765,16 @@ def _base_report(integrity, changes, scope):
         'warnings': warnings,
         'errors': [],
     }
+    for field in (
+        'selected_skills',
+        'skills_registry_sha256',
+        'task_write_scope',
+        'effective_write_scope',
+        'skill_write_authorizations',
+    ):
+        if field in plan:
+            report[field] = plan[field]
+    return report
 
 
 def _markdown_report(report):
@@ -731,6 +795,12 @@ def _markdown_report(report):
     lines.extend(f'- `{path}`' for path in report['allowed_write_set'])
     if not report['allowed_write_set']:
         lines.append('- None.')
+    if report.get('selected_skills'):
+        lines.extend(['', '## Skills Evidence', ''])
+        lines.extend(
+            f"- `{item['name']}` — `{item['sha256']}`"
+            for item in report['selected_skills']
+        )
     lines.extend(['', '## Actual Canonical Changes', ''])
     lines.extend(f'- `{path}`' for path in report['actual_changed_canonical_paths'])
     if not report['actual_changed_canonical_paths']:
@@ -864,6 +934,15 @@ def verified_working_tree_state(root, plan, scope):
         'ignored_untracked_baseline': list(plan['ignored_untracked_baseline']),
         'entries': entries,
     }
+    for field in (
+        'selected_skills',
+        'skills_registry_sha256',
+        'task_write_scope',
+        'effective_write_scope',
+        'skill_write_authorizations',
+    ):
+        if field in plan:
+            payload[field] = plan[field]
     canonical = json.dumps(
         payload,
         sort_keys=True,

@@ -1,5 +1,12 @@
 # Changelog
 
+## CLI 0.12.0 — 2026-09-25
+- Add Skills Architecture v1: seven core portable workflows under `.agents/skills/<name>/SKILL.md`, a strict `.project/skills.yaml` registry, and conditional `design-handoff` materialization when design integration is enabled. Skills orchestrate bounded semantic work and never replace canonical knowledge, policy, schemas, deterministic logic or human approval.
+- Add `project skills list`, `project skills validate`, and dry-run-first `project skills install [--apply]`; make new-project initialization, context, task and the existing knowledge-bootstrap flow Skills-aware, and generate a disposable Skills index.
+- Bind selected Skill snapshots, hashes, registry identity, task scope, effective write scope and per-path authorization into new SYNC plans; verify the same evidence through verification and finalization while preserving genuine v0.11 project/artifact compatibility and rejecting partial evidence or downgrade attempts.
+- Enforce the portable Skills contract with deterministic schema/registry validation, an allowlist of non-executable capabilities, protected and case-insensitive write roots, strict activation-marker typing, contained paths and immutable snapshot/hash evidence. Skills cannot execute arbitrary scripts or self-approve meaning-changing decisions.
+- Add explicit legacy-project migration with fail-closed clean-Git preflight, exact stock-v0.11 identity checks, pre-write revalidation and transactional rollback. Existing divergent project constitutions are never silently overwritten.
+
 ## CLI 0.11.0 — 2026-09-15
 - Add the universal Google Workspace / Designer Bridge with `project google connect|status|disconnect` and `project google workspace init|status|rebind|sync`; Git canonical knowledge remains the sole source of truth.
 - Use the official Google OAuth/API libraries with the single `drive.file` scope. Validate OAuth Desktop App configuration, require long-lived refresh capability, and prohibit browser authorization from all normal/background operations.

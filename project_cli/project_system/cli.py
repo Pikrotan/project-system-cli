@@ -29,6 +29,7 @@ from .google_credentials import GoogleCredentialManager, GoogleError
 from .google_workspace import (
     initialize_workspace, rebind_workspace, sync_workspace, workspace_status,
 )
+from .skills import SkillError, inspect_skill_layer, install_skills
 
 TYPES=list(DIRS)
 
@@ -51,13 +52,13 @@ def main(argv=None):
     q=sp.add_parser('new'); q.add_argument('type',choices=TYPES); q.add_argument('--title',required=True); q.add_argument('--domain',default='general'); q.add_argument('--owner',default='owner')
     q=sp.add_parser('validate'); q.add_argument('--changed',action='store_true',help='Accepted for workflow compatibility; validates the whole knowledge graph.')
     sp.add_parser('generate')
-    q=sp.add_parser('context'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='review')
+    q=sp.add_parser('context'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='review'); q.add_argument('--skill',action='append',default=[])
     q=sp.add_parser('impact'); q.add_argument('target')
     sp.add_parser('health')
     sp.add_parser('modules')
     q=sp.add_parser('enable'); q.add_argument('module')
     q=sp.add_parser('disable'); q.add_argument('module')
-    q=sp.add_parser('task'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='implement')
+    q=sp.add_parser('task'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='implement'); q.add_argument('--skill',action='append',default=[])
     q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, "auto", "watch", "pull", "intake", "plan", "verify", "finalize", or "migrate-bindings"'); q.add_argument('pack',nargs='?',help='SYNC action, REQUEST/PACK path, or pack_id'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--commit',action='store_true',help='explicitly commit the verified canonical state'); q.add_argument('--push',action='store_true',help='explicitly push an already verified SYNC commit'); q.add_argument('--message',help='custom commit message; valid only with --commit'); q.add_argument('--complete',action='store_true',help='explicitly complete a non-commit GitHub transport outcome'); q.add_argument('--outcome',choices=['reviewed-no-change','rejected','abandoned'],help='terminal outcome; requires --complete'); q.add_argument('--reason',help='required human reason for --complete'); q.add_argument('--apply',action='store_true',help='apply a deterministic sync binding migration audit'); q.add_argument('--plan',action='store_true',help='plan the bound pack after intake/pull'); q.add_argument('--issue',type=int,help='select one GitHub transport Issue; valid only with sync pull'); q.add_argument('--once',action='store_true',help='run exactly one bounded automatic pickup cycle; valid only with sync watch'); q.add_argument('--interval',type=int,help='watcher/scheduler interval in seconds (60..3600, default 120)'); q.add_argument('--replace',action='store_true',help='replace this project automatic SYNC registration after ownership proof'); q.add_argument('--json',dest='json_output',action='store_true',help='emit machine-readable automatic SYNC status'); q.add_argument('--registration',help='validated automatic SYNC registration ID; internal run command only')
     q=sp.add_parser('google',help='Google Workspace / Designer Bridge')
     google_commands=q.add_subparsers(dest='google_command',required=True)
@@ -71,7 +72,25 @@ def main(argv=None):
     workspace_commands.add_parser('status',help='verify resource binding and projection drift')
     workspace_commands.add_parser('rebind',help='recover an unambiguous metadata-bound workspace')
     workspace_commands.add_parser('sync',help='run one deterministic projection/import cycle')
-    q=sp.add_parser('bootstrap'); q.add_argument('--budget',choices=['small','medium','large'],default='medium')
+    q=sp.add_parser('bootstrap',help='prepare a knowledge-bootstrap context pack'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--skill',action='append',default=[])
+    q=sp.add_parser('skills',help='inspect, validate, or install project Skills')
+    skills_commands=q.add_subparsers(dest='skills_command',required=True)
+    skills_commands.add_parser(
+        'list',
+        help='list installed project Skills',
+        description='List the registered project Skills and their portable trigger descriptions without executing them.',
+    )
+    skills_commands.add_parser(
+        'validate',
+        help='validate the project Skills layer',
+        description='Validate the Skills registry, entrypoints, paths, capabilities, write ceilings, and required project profile.',
+    )
+    install=skills_commands.add_parser(
+        'install',
+        help='plan or apply Skills installation for this project',
+        description='Plan project Skills installation without writing by default; use --apply to perform the validated migration.',
+    )
+    install.add_argument('--apply',action='store_true',help='apply the planned Skills installation (default: dry-run only)')
     sp.add_parser('prepare-pr')
     args=p.parse_args(argv)
     if args.cmd=='init':
@@ -106,7 +125,8 @@ def main(argv=None):
         except GenerationBlockedError as exc:
             print(str(exc),file=sys.stderr); sys.exit(2)
     elif args.cmd=='context':
-        out,_=build_context(root,args.target,args.budget,args.mode); print(out)
+        try: out,_=build_context(root,args.target,args.budget,args.mode,skill_names=args.skill); print(out)
+        except SkillError as exc: print(f'context failed: {exc}',file=sys.stderr); sys.exit(2)
     elif args.cmd=='impact': print(json.dumps(impact(root,args.target),indent=2,ensure_ascii=False))
     elif args.cmd=='health':
         c,by,issues=health(root); print(f"BLOCKING {c['BLOCKING']}\nERROR {c['ERROR']}\nWARNING {c['WARNING']}\nINFO {c['INFO']}"); print('\nObjects:'); [print(f'- {k}: {v}') for k,v in sorted(by.items())]
@@ -118,7 +138,8 @@ def main(argv=None):
     elif args.cmd=='disable':
         notes=disable(root,args.module); print('Disabled',args.module); [print(x) for x in notes]
     elif args.cmd=='task':
-        out,_=task(root,args.target,args.mode,args.budget,False); print(out)
+        try: out,_=task(root,args.target,args.mode,args.budget,False,args.skill); print(out)
+        except SkillError as exc: print(f'task failed: {exc}',file=sys.stderr); sys.exit(2)
     elif args.cmd=='google':
         action=args.workspace_command
         try:
@@ -265,7 +286,25 @@ def main(argv=None):
         else:
             if args.pack: p.error('legacy project sync accepts one object ID')
             if args.commit or args.push or args.message is not None or args.complete or args.outcome or args.reason or args.apply or args.once or args.interval is not None: p.error('legacy project sync does not accept finalize options')
-            out,_=task(root,args.target,'sync',args.budget,True); print(out)
+            try: out,_=task(root,args.target,'sync',args.budget,True); print(out)
+            except SkillError as exc: print(f'sync failed: {exc}',file=sys.stderr); sys.exit(2)
     elif args.cmd=='bootstrap':
-        out,_=bootstrap(root,args.budget); print(out)
+        try: out,_=bootstrap(root,args.budget,args.skill); print(out)
+        except SkillError as exc: print(f'bootstrap failed: {exc}',file=sys.stderr); sys.exit(2)
+    elif args.cmd=='skills':
+        if args.skills_command=='install':
+            try:
+                report=install_skills(root,apply=args.apply)
+                print(json.dumps(report,indent=2,sort_keys=True,ensure_ascii=False))
+            except SkillError as exc:
+                print(f'skills install failed: {exc}',file=sys.stderr); sys.exit(2)
+        else:
+            layer=inspect_skill_layer(root)
+            if args.skills_command=='list':
+                print(f'Profile: {layer.registry.get("profile") if layer.registry else "legacy"}')
+                for name,record in sorted(layer.records.items()):
+                    print(f'- {name}: {record.description}')
+            else:
+                print_issues(layer.issues)
+                sys.exit(2 if any(x[0] in {'BLOCKING','ERROR'} for x in layer.issues) else 0)
     elif args.cmd=='prepare-pr': print(prepare_pr(root))

@@ -101,6 +101,10 @@ The manifest includes the SHA-256 hash of the exact pack bytes, approval metadat
 
 `plan.json` and `manifest.json` carry the same deterministic SHA-256 integrity block over their canonical JSON payloads. Verification rejects missing, mismatched, or changed planning artifacts. These hashes detect accidental or uncoordinated tampering; they are not a digital signature and do not replace repository access controls.
 
+### Skills-aware planning
+
+In a project activated with `tooling.skills_schema_version: 1`, planning also binds the selected project Skill paths and SHA-256 values, `.project/skills.yaml` SHA-256, the effective semantic write scope, and per-path Skill authorization. Every canonical `allowed_write_set` path must be authorized by at least one selected Skill after intersection with the prepared scope and governance boundary. `.generated/**` remains command-owned output and never enters Skill `max_writes` or the canonical allowed set. Verification and finalization recheck the same evidence. Plans without any Skills fields remain compatible only when `project.yaml` at the plan's bound `base_commit` identifies a genuinely pre-Skills project; stripping and re-hashing Skills evidence from a Skills-era plan is an integrity failure. Partial Skills evidence always fails closed.
+
 ## Phase 2 verification
 
 After an external semantic executor changes canonical files, verify the result with either the original pack path or its pack ID:

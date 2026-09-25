@@ -1,6 +1,7 @@
 # Development Process
 
 > Living narrative document. Keep this concise; atomic lifecycle facts belong in `knowledge/`.
+> Keep this as a human-readable delivery map. Agent workflows and deterministic commands remain in their canonical layers.
 
 ## Branches
 

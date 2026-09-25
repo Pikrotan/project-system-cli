@@ -1,31 +1,24 @@
 # AGENTS.md
 
-## Purpose
-Use the repository's canonical project knowledge without reading the entire tree or inventing approvals.
+Use active project knowledge and the matching registered project Skill without inventing facts, approvals, or write authority.
 
-## Sources of truth
-1. Active atomic objects in `knowledge/` for lifecycle facts.
-2. Active narrative docs in `docs/` for system explanation and intent.
-3. `project.yaml` and `.project/policies/*.yaml` for machine configuration and enforceable policy.
-4. Code/schema for implementation facts.
-5. Figma for visual truth where referenced by screen/flow objects.
-6. `.generated/` is derived and never canonical.
+## Canonical boundaries
 
-## Context loading
-Prefer a prepared task/context pack. Otherwise use `project context`. Do not recursively load `history/` or inactive blueprint material unless the task explicitly requires historical or blueprint context.
+- `knowledge/**` contains atomic lifecycle state.
+- `docs/**` contains current narrative state.
+- `project.yaml`, `.project/policies/**`, and schemas define constraints.
+- `.agents/skills/**` defines reusable workflows, never project truth.
+- `.generated/**` is derived and disposable.
+- `history/**` is excluded unless the task explicitly requires historical context.
 
-## Operating modes
-- DISCUSS: no repository changes.
-- RESEARCH: research/inbox changes only unless separately approved.
-- SYNC: semantic edits only inside the prepared allowed write set.
-- IMPLEMENT: code plus necessary approved documentation changes.
-- REVIEW: do not modify unless separately requested.
+## Skills and precedence
 
-## Authority
-AI may propose. Meaning-changing product, scope, architecture, business, security, privacy, and major UX decisions require the configured human approval path. Pure implementation choices may be made only when they do not change observable intent or architecture.
+Select project Skills from `.project/skills.yaml`. A Skill cannot override canonical knowledge, schemas, policies, human approval, or a prepared task/SYNC write scope. Global user Skills are optional helpers and must not be project correctness dependencies.
 
-## Uncertainty and drift
-Do not silently guess. Flag unresolved questions, out-of-scope impacts, or drift. Current active state wins over historical material.
+## Authority and scope
 
-## Completion
-After meaningful work report: Changed, Why, Not changed, Open conflicts, Validation, Git status.
+AI may propose. Meaning-changing product, scope, architecture, business, security, privacy, and major UX decisions require the configured human approval path. Write only where one selected Skill, the current task scope, and governance each authorize the path. Stop on missing authority, unresolved drift, or out-of-scope impact.
+
+## Context and completion
+
+Prefer a prepared task/context pack. Do not recursively load `history/**` or inactive blueprint material unless explicitly required. After meaningful work report: Changed, Why, Not changed, Open conflicts, Validation, Git status.

@@ -6,6 +6,7 @@ from .graph import extract_refs, dependency_cycles
 from .objects import DIRS
 from .object_loader import load_object_layer
 from .skills import inspect_skill_layer
+from .rules import inspect_rules_layer, validate_rule_references
 
 BAD_DEP_STATUSES={'deprecated','removed','rejected','superseded','cancelled'}
 
@@ -14,7 +15,10 @@ def validate(root):
     cfg=load_yaml(Path(root)/'project.yaml')
     for m in validate_project_schema(cfg): issues.append(('BLOCKING','project.yaml',m))
     issues.extend(inspect_skill_layer(root,cfg).issues)
+    rule_layer=inspect_rules_layer(root,cfg)
+    issues.extend(rule_layer.issues)
     layer=load_object_layer(root)
+    issues.extend(validate_rule_references(rule_layer,layer.objects))
     for p in layer.unsupported_paths:
         issues.append(('ERROR',str(p.relative_to(root)),'unsupported atomic object format; use .md with YAML frontmatter and Markdown body'))
     for failure in layer.errors:

@@ -718,6 +718,23 @@ def sync_skill_names(planned_changes, project_config):
 
 def _git_clean(root):
     from .process_runner import run_process
+    root = Path(root).resolve()
+    try:
+        top = run_process(
+            ['git', 'rev-parse', '--show-toplevel'],
+            cwd=root, text=True, capture_output=True, check=False,
+        )
+    except OSError:
+        return None
+    if top.returncode != 0 or not top.stdout.strip():
+        return None
+    try:
+        git_root = Path(top.stdout.strip()).resolve()
+    except OSError:
+        return None
+    if git_root != root:
+        return None
+
     try:
         result = run_process(
             ['git', 'status', '--porcelain=v1', '--untracked-files=all'],

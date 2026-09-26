@@ -70,7 +70,7 @@ def google_policy(root, *, require_enabled=True):
         raise GoogleWorkspaceConfigError('Google Workspace enabled must be boolean')
     allowed = {
         'enabled', 'project_overview', 'design_knowledge', 'design_changes',
-        'projection_drift',
+        'projection_language', 'projection_drift',
     }
     if set(policy) - allowed:
         raise GoogleWorkspaceConfigError('Google Workspace configuration has unsupported fields')
@@ -79,12 +79,18 @@ def google_policy(root, *, require_enabled=True):
         'project_overview': policy.get('project_overview', True),
         'design_knowledge': policy.get('design_knowledge', True),
         'design_changes': policy.get('design_changes', True),
+        'projection_language': policy.get('projection_language', 'en'),
         'projection_drift': policy.get('projection_drift', 'restore'),
     }
     if any(type(normalized[key]) is not bool for key in (
         'project_overview', 'design_knowledge', 'design_changes',
     )):
         raise GoogleWorkspaceConfigError('Google Workspace resource flags must be boolean')
+    if (
+        not isinstance(normalized['projection_language'], str)
+        or normalized['projection_language'] not in {'en', 'ru'}
+    ):
+        raise GoogleWorkspaceConfigError('unsupported projection language')
     if normalized['projection_drift'] != 'restore':
         raise GoogleWorkspaceConfigError('unsupported projection drift policy')
     return project, normalized
@@ -195,7 +201,9 @@ def _new_binding(project_id, repository, folder, resources, timestamp):
     }
 
 
-def _projection_sync(root, binding, gateway, *, clock=None):
+def _projection_sync(
+    root, binding, gateway, *, clock=None, projection_language='en',
+):
     clock = clock or (lambda: datetime.now(timezone.utc))
     result = {}
     updated = deepcopy(binding)
@@ -208,6 +216,7 @@ def _projection_sync(root, binding, gateway, *, clock=None):
         timestamp = previous['projected_at'] if previous else _iso(clock())
         desired = build_projection(
             root, role, projected_at=timestamp, source_commit=head,
+            language=projection_language,
         )
         source_changed = (
             previous is None
@@ -217,6 +226,7 @@ def _projection_sync(root, binding, gateway, *, clock=None):
         if source_changed and previous is not None:
             desired = build_projection(
                 root, role, projected_at=_iso(clock()), source_commit=head,
+                language=projection_language,
             )
         actual = gateway.read_document_text(resource['id'])
         actual_hash = content_sha256(actual)
@@ -324,7 +334,10 @@ def initialize_workspace(root, *, manager=None, gateway=None, clock=None):
     binding = write_workspace_binding(
         root, _new_binding(project_id, repository, folder, resources, timestamp),
     )
-    binding, projections = _projection_sync(root, binding, api, clock=clock)
+    binding, projections = _projection_sync(
+        root, binding, api, clock=clock,
+        projection_language=policy['projection_language'],
+    )
     binding = write_workspace_binding(root, binding)
     report = {
         'status': 'initialized', 'project_id': project_id,
@@ -361,6 +374,7 @@ def workspace_status(root, *, manager=None, gateway=None):
         if not dirty:
             desired = build_projection(
                 root, role, projected_at=metadata['projected_at'],
+                language=policy['projection_language'],
             )
             source_stale = (
                 desired['source_commit'] != metadata['source_commit']
@@ -446,7 +460,10 @@ def sync_workspace(root, *, manager=None, gateway=None, clock=None, background=F
     _validate_binding_policy(binding, policy)
     api = _gateway(manager, gateway, background=background)
     _remote_binding_check(binding, api)
-    updated, projections = _projection_sync(root, binding, api, clock=clock)
+    updated, projections = _projection_sync(
+        root, binding, api, clock=clock,
+        projection_language=policy['projection_language'],
+    )
     if updated != binding:
         updated = write_workspace_binding(root, updated)
     design = process_design_changes(root, updated, api, clock=clock) if policy['design_changes'] else {

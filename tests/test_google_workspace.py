@@ -31,8 +31,9 @@ from project_system.google_design import (
     row_designer_hash,
 )
 from project_system.google_workspace import (
-    GoogleWorkspaceConflictError, google_auto_cycle, initialize_workspace,
-    rebind_workspace, sync_workspace, workspace_status,
+    GoogleWorkspaceConfigError, GoogleWorkspaceConflictError, google_auto_cycle,
+    google_policy, initialize_workspace, rebind_workspace, sync_workspace,
+    workspace_status,
 )
 from project_system.google_projection import build_projection
 from project_system.init_project import init_project
@@ -241,6 +242,14 @@ def test_old_config_remains_valid_and_google_config_is_exact(tmp_path):
     assert validate_project_schema(old) == []
     old['external_systems']['google_workspace'] = {'enabled': True}
     assert validate_project_schema(old) == []
+
+    old['external_systems']['google_workspace']['projection_language'] = 'ru'
+    assert validate_project_schema(old) == []
+
+    old['external_systems']['google_workspace']['projection_language'] = 'de'
+    assert validate_project_schema(old)
+
+    old['external_systems']['google_workspace']['projection_language'] = 'en'
     old['external_systems']['google_workspace']['token'] = 'forbidden'
     assert any('Additional properties' in item for item in validate_project_schema(old))
 
@@ -537,6 +546,35 @@ def test_overview_projection_drops_only_embedded_leading_document_h1(tmp_path):
     assert 'Body' in lines
 
 
+
+def test_projection_language_localizes_shell_without_translating_canonical_content(tmp_path):
+    root = project_fixture(tmp_path)
+
+    default = build_projection(
+        root, 'project_overview', projected_at=NOW, source_commit='same',
+    )
+    en = build_projection(
+        root, 'project_overview', projected_at=NOW,
+        source_commit='same', language='en',
+    )
+    ru = build_projection(
+        root, 'project_overview', projected_at=NOW,
+        source_commit='same', language='ru',
+    )
+
+    assert default['text'] == en['text']
+    assert default['source_sha256'] == en['source_sha256']
+
+    assert 'Universal Project \u2014 Project Overview' in en['text']
+    assert 'Universal Project \u2014 \u041e\u0431\u0437\u043e\u0440 \u043f\u0440\u043e\u0435\u043a\u0442\u0430' in ru['text']
+    assert '\u042d\u0442\u043e\u0442 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442 \u2014 \u0434\u043e\u0441\u0442\u0443\u043f\u043d\u0430\u044f \u0442\u043e\u043b\u044c\u043a\u043e \u0434\u043b\u044f \u0447\u0442\u0435\u043d\u0438\u044f' in ru['text']
+
+    assert 'Canonical product value.' in ru['text']
+    assert 'This document is a read-only projection of canonical Git knowledge.' not in ru['text']
+
+    assert en['source_sha256'] != ru['source_sha256']
+
+
 def test_design_projection_does_not_duplicate_embedded_document_h1(tmp_path):
     root = project_fixture(tmp_path)
     (root / 'docs/design/DESIGN_OVERVIEW.md').write_text(
@@ -573,6 +611,54 @@ def test_status_reports_committed_canonical_source_as_stale_until_sync(tmp_path)
     status = workspace_status(root, gateway=gateway)
     assert status['projections']['project_overview']['status'] == 'stale_source'
     assert status['projections']['project_overview']['source_stale'] is True
+
+
+
+def test_projection_language_change_becomes_stale_and_syncs_same_resources(tmp_path):
+    root, gateway, report = initialized(tmp_path)
+    before = load_workspace_binding(root)
+    resource_ids = {
+        role: before['resources'][role]['id']
+        for role in ('project_overview', 'design_knowledge')
+    }
+
+    config_path = root / 'project.yaml'
+    config = yaml.safe_load(config_path.read_text(encoding='utf-8'))
+    config['external_systems']['google_workspace']['projection_language'] = 'ru'
+    config_path.write_text(
+        yaml.safe_dump(config, sort_keys=False),
+        encoding='utf-8',
+    )
+    git(root, 'add', 'project.yaml')
+    git(root, 'commit', '-qm', 'use russian google projections')
+
+    stale = workspace_status(root, gateway=gateway)
+    assert stale['projections']['project_overview']['status'] == 'stale_source'
+    assert stale['projections']['design_knowledge']['status'] == 'stale_source'
+
+    result = sync_workspace(root, gateway=gateway, clock=lambda: NOW)
+    assert result['projections']['project_overview']['status'] == 'updated'
+    assert result['projections']['design_knowledge']['status'] == 'updated'
+
+    after = load_workspace_binding(root)
+    assert {
+        role: after['resources'][role]['id']
+        for role in ('project_overview', 'design_knowledge')
+    } == resource_ids
+
+    assert 'Universal Project \u2014 \u041e\u0431\u0437\u043e\u0440 \u043f\u0440\u043e\u0435\u043a\u0442\u0430' in gateway.docs[
+        resource_ids['project_overview']
+    ]
+    assert 'Universal Project \u2014 \u0411\u0430\u0437\u0430 \u0437\u043d\u0430\u043d\u0438\u0439 \u043f\u043e \u0434\u0438\u0437\u0430\u0439\u043d\u0443' in gateway.docs[
+        resource_ids['design_knowledge']
+    ]
+
+    current = workspace_status(root, gateway=gateway)
+    assert all(
+        value['status'] == 'current'
+        for value in current['projections'].values()
+    )
+    assert git(root, 'status', '--short') == ''
 
 
 def test_design_projection_marks_open_questions_as_unresolved(tmp_path):
@@ -907,3 +993,19 @@ def test_cli_google_surface_uses_injected_boundaries(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)['status'] == 'connected'
     main(['google', 'disconnect'])
     assert json.loads(capsys.readouterr().out)['status'] == 'disconnected'
+
+def test_google_policy_rejects_non_string_projection_language(tmp_path):
+    root = project_fixture(tmp_path)
+    config_path = root / 'project.yaml'
+    config = yaml.safe_load(config_path.read_text(encoding='utf-8'))
+    config['external_systems']['google_workspace']['projection_language'] = ['ru']
+    config_path.write_text(
+        yaml.safe_dump(config, sort_keys=False),
+        encoding='utf-8',
+    )
+
+    with pytest.raises(
+        GoogleWorkspaceConfigError,
+        match='unsupported projection language',
+    ):
+        google_policy(root)

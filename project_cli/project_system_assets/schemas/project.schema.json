@@ -137,6 +137,7 @@
         "project_overview": {"type": "boolean", "default": true},
         "design_knowledge": {"type": "boolean", "default": true},
         "design_changes": {"type": "boolean", "default": true},
+        "projection_language": {"enum": ["en", "ru"], "default": "en"},
         "projection_drift": {"enum": ["restore"], "default": "restore"}
       },
       "additionalProperties": false

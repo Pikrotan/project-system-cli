@@ -1,5 +1,11 @@
 # Changelog
 
+## CLI 0.12.1 — 2026-09-26
+- Add per-project Google Workspace projection localization through `external_systems.google_workspace.projection_language`, supporting `en` and `ru` with backward-compatible English defaults. Localize projection titles, headings, labels, unresolved/empty-state markers and projection metadata without translating canonical Git content.
+- Include non-English projection language in deterministic projection source identity so language changes become stale and resync the existing Google Docs without changing their resource identities or requiring a rebind; preserve historical English fingerprints.
+- Validate projection language in both schema and runtime, including fail-closed handling of non-string configuration values.
+- Harden Skills installation Git cleanliness proof by requiring the discovered Git worktree root to match the Project System root before treating status as authoritative; nested non-project repositories and unavailable Git state now fail closed instead of being misclassified as dirty worktrees.
+
 ## CLI 0.12.0 — 2026-09-25
 - Add Skills Architecture v1: seven core portable workflows under `.agents/skills/<name>/SKILL.md`, a strict `.project/skills.yaml` registry, and conditional `design-handoff` materialization when design integration is enabled. Skills orchestrate bounded semantic work and never replace canonical knowledge, policy, schemas, deterministic logic or human approval.
 - Add `project skills list`, `project skills validate`, and dry-run-first `project skills install [--apply]`; make new-project initialization, context, task and the existing knowledge-bootstrap flow Skills-aware, and generate a disposable Skills index.

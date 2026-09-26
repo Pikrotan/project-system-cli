@@ -10,7 +10,7 @@ def test_package_metadata_version_matches_runtime_version():
         (root / 'pyproject.toml').read_text(encoding='utf-8')
     )['project']['version']
 
-    assert package_version == __version__ == '0.12.0'
+    assert package_version == __version__ == '0.12.1'
 
 
 def test_skills_release_assets_are_declared_and_packaged():

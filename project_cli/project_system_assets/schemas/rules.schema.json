@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project System Rules registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile",
+    "rules"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "profile": {
+      "const": "project-system-rules-v1"
+    },
+    "rules": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Z0-9]{0,}-[0-9]{3,}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/rule"
+      }
+    }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "status",
+        "category",
+        "description",
+        "verification",
+        "enforcement",
+        "exception_policy"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "active",
+            "deprecated"
+          ]
+        },
+        "category": {
+          "enum": [
+            "architecture",
+            "repository",
+            "dependency",
+            "security",
+            "requirement",
+            "testing",
+            "process"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "enforcement": {
+          "$ref": "#/$defs/enforcement"
+        },
+        "traceability": {
+          "$ref": "#/$defs/traceability"
+        },
+        "superseded_by": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9]{0,}-[0-9]{3,}$"
+        },
+        "exception_policy": {
+          "enum": [
+            "forbidden",
+            "decision_required"
+          ]
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "paths"
+      ],
+      "properties": {
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      }
+    },
+    "enforcement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "severity",
+        "checkpoints"
+      ],
+      "properties": {
+        "severity": {
+          "enum": [
+            "BLOCKING",
+            "ERROR",
+            "WARNING",
+            "INFO"
+          ]
+        },
+        "checkpoints": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "project_validate",
+              "task_verify",
+              "sync_verify"
+            ]
+          }
+        }
+      }
+    },
+    "traceability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "object_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "docs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        }
+      },
+      "minProperties": 1
+    },
+    "verification": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "checker"
+          ],
+          "properties": {
+            "method": {
+              "const": "deterministic"
+            },
+            "checker": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
+            },
+            "parameters": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method"
+          ],
+          "properties": {
+            "method": {
+              "const": "ai"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "method"
+          ],
+          "properties": {
+            "method": {
+              "const": "human"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

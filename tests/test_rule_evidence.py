@@ -480,3 +480,46 @@ def test_serialization_rejects_stale_fingerprint_after_details_mutation(tmp_path
 
     with pytest.raises(RuleEvidenceError, match="fingerprint"):
         rule_evidence_to_dict(evidence)
+
+
+def test_context_fingerprint_is_independent_of_absolute_checkout_path(tmp_path):
+    root_a = tmp_path / "checkout-a"
+    root_b = tmp_path / "checkout-b"
+
+    objects_a = {
+        "FEAT-001": {
+            "data": {
+                "id": "FEAT-001",
+                "type": "feature",
+                "owner": "owner",
+            },
+            "path": root_a / "knowledge/features/FEAT-001.md",
+            "body": "same body",
+        }
+    }
+    objects_b = {
+        "FEAT-001": {
+            "data": {
+                "id": "FEAT-001",
+                "type": "feature",
+                "owner": "owner",
+            },
+            "path": root_b / "knowledge/features/FEAT-001.md",
+            "body": "same body",
+        }
+    }
+
+    evidence_a = build(
+        root_a,
+        ctx=context(root_a, objects=objects_a),
+    )
+    evidence_b = build(
+        root_b,
+        ctx=context(root_b, objects=objects_b),
+    )
+
+    assert (
+        evidence_a.evaluation_context_sha256
+        == evidence_b.evaluation_context_sha256
+    )
+    assert evidence_a.evidence_fingerprint == evidence_b.evidence_fingerprint

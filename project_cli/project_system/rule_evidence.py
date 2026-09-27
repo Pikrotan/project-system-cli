@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 import math
-from pathlib import PurePath
+from pathlib import Path, PurePath
 import re
 from typing import Any
 
@@ -157,6 +157,55 @@ def _rule_scope(rule, rule_id):
     return tuple(paths)
 
 
+def _normalize_context_value(value, *, project_root, location):
+    if isinstance(value, PurePath):
+        path = Path(value)
+        root = Path(project_root)
+
+        if path.is_absolute():
+            if not root.is_absolute():
+                raise RuleEvidenceError(
+                    f"{location} contains an absolute path but project_root is relative"
+                )
+            try:
+                path = path.relative_to(root)
+            except ValueError as exc:
+                raise RuleEvidenceError(
+                    f"{location} contains an absolute path outside project_root"
+                ) from exc
+
+        return path.as_posix()
+
+    if isinstance(value, Mapping):
+        items = []
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise RuleEvidenceError(
+                    f"{location} contains a non-string mapping key"
+                )
+            items.append((key, item))
+        return {
+            key: _normalize_context_value(
+                item,
+                project_root=project_root,
+                location=f"{location}.{key}",
+            )
+            for key, item in sorted(items, key=lambda pair: pair[0])
+        }
+
+    if isinstance(value, (list, tuple)):
+        return [
+            _normalize_context_value(
+                item,
+                project_root=project_root,
+                location=f"{location}[{index}]",
+            )
+            for index, item in enumerate(value)
+        ]
+
+    return _normalize_json(value, location=location)
+
+
 def _context_payload(context):
     if not isinstance(context, RuleEvaluationContext):
         raise RuleEvidenceError("context must be a RuleEvaluationContext")
@@ -167,12 +216,13 @@ def _context_payload(context):
     if type(context.object_layer_complete) is not bool:
         raise RuleEvidenceError("context object_layer_complete must be a boolean")
     _require_mapping(context.objects, "context objects")
-    return _normalize_json(
+    return _normalize_context_value(
         {
             "checkpoint": context.checkpoint,
             "object_layer_complete": context.object_layer_complete,
             "objects": context.objects,
         },
+        project_root=context.project_root,
         location="evaluation_context",
     )
 

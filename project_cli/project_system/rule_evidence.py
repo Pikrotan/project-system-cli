@@ -6,7 +6,7 @@ details; it does not attempt to fingerprint the complete working tree.
 """
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
 import math
@@ -19,6 +19,10 @@ from .rule_engine import (
     RuleEvaluationContext,
     RuleEvaluationResult,
     SUPPORTED_CHECKPOINTS,
+)
+from .rule_exceptions import (
+    RuleExceptionApplication,
+    RuleExceptionResolution,
 )
 
 
@@ -35,7 +39,7 @@ class RuleEvidenceError(RuntimeError):
 
 @dataclass(frozen=True)
 class RuleResultEvidence:
-    """Evidence for one evaluated active Rule before exception resolution."""
+    """Evidence for one evaluated active Rule and its governed resolution."""
 
     rule_id: str
     rule_sha256: str
@@ -434,6 +438,7 @@ def build_rule_evidence(
     context,
     results,
     base_commit=None,
+    exception_resolution=None,
 ):
     """Build deterministic Evidence v1 without I/O or checker re-evaluation."""
     _require_nonempty_string(project_id, "project_id")
@@ -461,7 +466,99 @@ def build_rule_evidence(
         seen_rule_ids.add(item.rule_id)
         evidence_results.append(item)
     evidence_results.sort(key=lambda item: item.rule_id)
-    evidence_results = tuple(evidence_results)
+    result_by_rule_id = {item.rule_id: item for item in evidence_results}
+
+    if exception_resolution is None:
+        applications = ()
+    elif not isinstance(exception_resolution, RuleExceptionResolution):
+        raise RuleEvidenceError(
+            "exception_resolution must be a RuleExceptionResolution"
+        )
+    else:
+        applications = exception_resolution.applications
+    if not isinstance(applications, tuple):
+        raise RuleEvidenceError(
+            "exception_resolution.applications must be a tuple"
+        )
+
+    exceptions = _require_mapping(
+        exception_registry.get("exceptions"),
+        "exception_registry.exceptions",
+    )
+    seen_application_rules = set()
+    seen_exception_ids = set()
+    applied_exception_ids = []
+    for index, application in enumerate(applications):
+        if not isinstance(application, RuleExceptionApplication):
+            raise RuleEvidenceError(
+                f"exception_resolution.applications[{index}] must be a "
+                "RuleExceptionApplication"
+            )
+        _require_nonempty_string(
+            application.rule_id,
+            f"exception_resolution.applications[{index}].rule_id",
+        )
+        _require_nonempty_string(
+            application.exception_id,
+            f"exception_resolution.applications[{index}].exception_id",
+        )
+        if application.rule_id in seen_application_rules:
+            raise RuleEvidenceError(
+                "duplicate exception application for rule_id: "
+                f"{application.rule_id}"
+            )
+        if application.exception_id in seen_exception_ids:
+            raise RuleEvidenceError(
+                "duplicate exception_id in resolution: "
+                f"{application.exception_id}"
+            )
+        seen_application_rules.add(application.rule_id)
+        seen_exception_ids.add(application.exception_id)
+
+        item = result_by_rule_id.get(application.rule_id)
+        if item is None:
+            raise RuleEvidenceError(
+                "exception application references unknown result rule_id: "
+                f"{application.rule_id}"
+            )
+        if item.raw_status != "FAIL":
+            raise RuleEvidenceError(
+                "exception application requires a raw FAIL result: "
+                f"{application.rule_id}"
+            )
+        rule_definition = rules[application.rule_id]
+        if rule_definition.get("exception_policy") != "decision_required":
+            raise RuleEvidenceError(
+                "exception application requires exception_policy "
+                f"decision_required: {application.rule_id}"
+            )
+        exception = exceptions.get(application.exception_id)
+        if not isinstance(exception, Mapping):
+            raise RuleEvidenceError(
+                "exception application references unknown exception_id: "
+                f"{application.exception_id}"
+            )
+        if exception.get("rule_id") != application.rule_id:
+            raise RuleEvidenceError(
+                "exception application rule_id does not match exception: "
+                f"{application.exception_id}"
+            )
+        if exception.get("state") != "active":
+            raise RuleEvidenceError(
+                "exception application requires an active exception: "
+                f"{application.exception_id}"
+            )
+        result_by_rule_id[application.rule_id] = replace(
+            item,
+            effective_status="WAIVED",
+            exception_id=application.exception_id,
+        )
+        applied_exception_ids.append(application.exception_id)
+
+    evidence_results = tuple(
+        result_by_rule_id[rule_id] for rule_id in sorted(result_by_rule_id)
+    )
+    applied_exception_ids = tuple(sorted(applied_exception_ids))
 
     rules_hash = canonical_sha256(rules_registry)
     exceptions_hash = canonical_sha256(exception_registry)
@@ -476,7 +573,7 @@ def build_rule_evidence(
         exception_registry_sha256=exceptions_hash,
         evaluation_context_sha256=context_hash,
         results=evidence_results,
-        applied_exception_ids=(),
+        applied_exception_ids=applied_exception_ids,
     )
     fingerprint = canonical_sha256(payload)
     return RuleEvidence(
@@ -490,7 +587,7 @@ def build_rule_evidence(
         exception_registry_sha256=exceptions_hash,
         evaluation_context_sha256=context_hash,
         results=evidence_results,
-        applied_exception_ids=(),
+        applied_exception_ids=applied_exception_ids,
         evidence_fingerprint=fingerprint,
     )
 

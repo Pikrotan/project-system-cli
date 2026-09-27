@@ -1,6 +1,7 @@
 from pathlib import Path
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import subprocess
 
 from . import __version__
@@ -14,6 +15,10 @@ from .rules import inspect_rules_layer, validate_rule_references
 from .process_runner import run_process
 from .rule_engine import RuleEvaluationContext, evaluate_rules
 from .rule_evidence import RuleEvidence, RuleEvidenceError, build_rule_evidence
+from .rule_exceptions import (
+    RuleExceptionResolutionError,
+    resolve_rule_exceptions,
+)
 
 BAD_DEP_STATUSES={'deprecated','removed','rejected','superseded','cancelled'}
 
@@ -44,6 +49,10 @@ def _git_head(root):
             f'cannot establish Git HEAD for Rule Evidence: {reason}'
         )
     return result.stdout.strip()
+
+
+def _utc_now():
+    return datetime.now(timezone.utc)
 
 
 def _object_layer_is_complete(layer):
@@ -102,12 +111,19 @@ def _rule_reason(result):
 def _rule_issues(results):
     issues=[]
     for result in results:
-        if result.raw_status in {'PASS','NOT_APPLICABLE'}:
+        status=result.effective_status
+        if status in {'PASS','NOT_APPLICABLE'}:
             continue
-        severity='ERROR' if result.raw_status=='ERROR' else result.severity
+        if status=='WAIVED':
+            issues.append((
+                'INFO',result.rule_id,
+                f'executable rule WAIVED: raw {result.raw_status} waived by {result.exception_id}',
+            ))
+            continue
+        severity='ERROR' if status=='ERROR' else result.severity
         issues.append((
             severity,result.rule_id,
-            f'executable rule {result.raw_status}: {_rule_reason(result)}',
+            f'executable rule {status}: {_rule_reason(result)}',
         ))
     return issues
 
@@ -177,16 +193,31 @@ def validate_report(root):
             )
             results=evaluate_rules(rule_layer.rules_registry,context)
             try:
-                evidence=build_rule_evidence(
-                    project_id=_project_id(cfg),git_head=git_head,base_commit=None,
-                    cli_version=__version__,rules_registry=rule_layer.rules_registry,
-                    exception_registry=rule_layer.exception_registry,
-                    context=context,results=results,
+                exception_resolution=resolve_rule_exceptions(
+                    rule_layer.rules_registry,
+                    rule_layer.exception_registry,
+                    context,
+                    results,
+                    as_of=_utc_now(),
                 )
-            except RuleEvidenceError as exc:
-                issues.append(('ERROR','rules_evidence',f'cannot build trustworthy Rule Evidence: {exc}'))
+            except RuleExceptionResolutionError as exc:
+                issues.append((
+                    'ERROR','rules_exceptions',
+                    f'cannot resolve trustworthy Rule exceptions: {exc}',
+                ))
             else:
-                issues.extend(_rule_issues(results))
+                try:
+                    evidence=build_rule_evidence(
+                        project_id=_project_id(cfg),git_head=git_head,base_commit=None,
+                        cli_version=__version__,rules_registry=rule_layer.rules_registry,
+                        exception_registry=rule_layer.exception_registry,
+                        context=context,results=results,
+                        exception_resolution=exception_resolution,
+                    )
+                except RuleEvidenceError as exc:
+                    issues.append(('ERROR','rules_evidence',f'cannot build trustworthy Rule Evidence: {exc}'))
+                else:
+                    issues.extend(_rule_issues(evidence.results))
     return ProjectValidationReport(tuple(issues),evidence)
 
 

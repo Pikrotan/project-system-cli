@@ -4,6 +4,10 @@ from pathlib import Path
 import pytest
 
 from project_system.rule_engine import RuleEvaluationContext, RuleEvaluationResult
+from project_system.rule_exceptions import (
+    RuleExceptionApplication,
+    RuleExceptionResolution,
+)
 from project_system.rule_evidence import (
     RuleEvidenceError,
     build_rule_evidence,
@@ -24,6 +28,7 @@ def rule(
     severity="ERROR",
     scope=None,
     description="Evidence test rule.",
+    exception_policy="forbidden",
 ):
     verification = {"method": method}
     if method == "deterministic":
@@ -43,7 +48,7 @@ def rule(
             "severity": severity,
             "checkpoints": ["project_validate"],
         },
-        "exception_policy": "forbidden",
+        "exception_policy": exception_policy,
     }
     if scope is not None:
         value["scope"] = {"paths": list(scope)}
@@ -105,7 +110,16 @@ def result(
     )
 
 
-def build(root, *, registry=None, exceptions=None, ctx=None, results=None, **identity):
+def build(
+    root,
+    *,
+    registry=None,
+    exceptions=None,
+    ctx=None,
+    results=None,
+    exception_resolution=None,
+    **identity,
+):
     return build_rule_evidence(
         project_id=identity.pop("project_id", "project-system-cli"),
         git_head=identity.pop("git_head", GIT_HEAD),
@@ -115,6 +129,7 @@ def build(root, *, registry=None, exceptions=None, ctx=None, results=None, **ide
         exception_registry=exceptions or exception_registry(),
         context=ctx or context(root),
         results=[result()] if results is None else results,
+        exception_resolution=exception_resolution,
         **identity,
     )
 
@@ -523,3 +538,297 @@ def test_context_fingerprint_is_independent_of_absolute_checkout_path(tmp_path):
         == evidence_b.evaluation_context_sha256
     )
     assert evidence_a.evidence_fingerprint == evidence_b.evidence_fingerprint
+
+
+def governed_exception(*, rule_id="REPO-001"):
+    return {
+        "rule_id": rule_id,
+        "state": "active",
+        "mode": "permanent",
+        "reason": "Approved exception.",
+        "scope": {"paths": ["README.md"]},
+        "decision_id": "DEC-20260927-deadbeef",
+        "approved_by": "project-owner",
+        "approved_at": "2026-09-27T10:00:00Z",
+    }
+
+
+def failed_result(*, rule_id="REPO-001", checker="repository.required_path"):
+    return result(
+        rule_id=rule_id,
+        checker=checker,
+        status="FAIL",
+        details={"path": "README.md", "exists": False},
+        failure_reason="required path is missing",
+    )
+
+
+def test_evidence_applies_resolved_exception_without_changing_raw_status(tmp_path):
+    exception_id = "EXC-20260927-abcdef12"
+    evidence = build(
+        tmp_path,
+        registry=rules_registry(
+            {"REPO-001": rule(exception_policy="decision_required")}
+        ),
+        exceptions=exception_registry(
+            {exception_id: governed_exception()}
+        ),
+        results=[failed_result()],
+        exception_resolution=RuleExceptionResolution(
+            (RuleExceptionApplication("REPO-001", exception_id),)
+        ),
+    )
+
+    item = evidence.results[0]
+    assert item.raw_status == "FAIL"
+    assert item.effective_status == "WAIVED"
+    assert item.exception_id == exception_id
+    assert evidence.applied_exception_ids == (exception_id,)
+
+
+def test_empty_resolution_preserves_stage3_evidence_exactly(tmp_path):
+    baseline = build(tmp_path, results=[failed_result()])
+    resolved = build(
+        tmp_path,
+        results=[failed_result()],
+        exception_resolution=RuleExceptionResolution(()),
+    )
+    assert rule_evidence_to_dict(baseline) == rule_evidence_to_dict(resolved)
+
+
+def test_waiver_changes_evidence_fingerprint(tmp_path):
+    exception_id = "EXC-20260927-abcdef12"
+    selected_registry = rules_registry(
+        {"REPO-001": rule(exception_policy="decision_required")}
+    )
+    selected_exceptions = exception_registry(
+        {exception_id: governed_exception()}
+    )
+    baseline = build(
+        tmp_path,
+        registry=selected_registry,
+        exceptions=selected_exceptions,
+        results=[failed_result()],
+    )
+    waived = build(
+        tmp_path,
+        registry=selected_registry,
+        exceptions=selected_exceptions,
+        results=[failed_result()],
+        exception_resolution=RuleExceptionResolution(
+            (RuleExceptionApplication("REPO-001", exception_id),)
+        ),
+    )
+    assert baseline.evidence_fingerprint != waived.evidence_fingerprint
+
+
+def test_waived_evidence_hashes_the_entire_exception_registry(tmp_path):
+    applied_id = "EXC-20260927-abcdef12"
+    full_registry = exception_registry(
+        {
+            applied_id: governed_exception(),
+            "EXC-20260927-abcdef13": {
+                **governed_exception(),
+                "state": "revoked",
+                "revoked_by": "project-owner",
+                "revoked_at": "2026-09-27T11:00:00Z",
+            },
+        }
+    )
+    evidence = build(
+        tmp_path,
+        registry=rules_registry(
+            {"REPO-001": rule(exception_policy="decision_required")}
+        ),
+        exceptions=full_registry,
+        results=[failed_result()],
+        exception_resolution=RuleExceptionResolution(
+            (RuleExceptionApplication("REPO-001", applied_id),)
+        ),
+    )
+    assert evidence.exception_registry_sha256 == canonical_sha256(full_registry)
+
+
+def test_applied_exception_ids_are_sorted_deterministically(tmp_path):
+    rules = {
+        "REPO-002": rule(
+            checker="repository.forbidden_path",
+            exception_policy="decision_required",
+        ),
+        "REPO-001": rule(exception_policy="decision_required"),
+    }
+    exceptions = {
+        "EXC-20260927-bbbb0002": governed_exception(rule_id="REPO-002"),
+        "EXC-20260927-aaaa0001": governed_exception(rule_id="REPO-001"),
+    }
+    evidence = build(
+        tmp_path,
+        registry=rules_registry(rules),
+        exceptions=exception_registry(exceptions),
+        results=[
+            failed_result(
+                rule_id="REPO-002",
+                checker="repository.forbidden_path",
+            ),
+            failed_result(),
+        ],
+        exception_resolution=RuleExceptionResolution(
+            (
+                RuleExceptionApplication(
+                    "REPO-002", "EXC-20260927-bbbb0002"
+                ),
+                RuleExceptionApplication(
+                    "REPO-001", "EXC-20260927-aaaa0001"
+                ),
+            )
+        ),
+    )
+    assert evidence.applied_exception_ids == (
+        "EXC-20260927-aaaa0001",
+        "EXC-20260927-bbbb0002",
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "selected_rule"),
+    [
+        (result(status="PASS"), rule(exception_policy="decision_required")),
+        (
+            result(status="ERROR", failure_reason="checker error"),
+            rule(exception_policy="decision_required"),
+        ),
+        (
+            result(method="human", status="PENDING"),
+            rule(method="human", exception_policy="decision_required"),
+        ),
+        (
+            result(status="NOT_APPLICABLE"),
+            rule(exception_policy="decision_required"),
+        ),
+    ],
+)
+def test_evidence_rejects_exception_for_non_fail_status(
+    tmp_path,
+    raw,
+    selected_rule,
+):
+    exception_id = "EXC-20260927-abcdef12"
+    with pytest.raises(RuleEvidenceError, match="raw FAIL"):
+        build(
+            tmp_path,
+            registry=rules_registry({"REPO-001": selected_rule}),
+            exceptions=exception_registry(
+                {exception_id: governed_exception()}
+            ),
+            results=[raw],
+            exception_resolution=RuleExceptionResolution(
+                (RuleExceptionApplication("REPO-001", exception_id),)
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("resolution", "exceptions", "message"),
+    [
+        (
+            RuleExceptionResolution(
+                (
+                    RuleExceptionApplication(
+                        "REPO-001", "EXC-20260927-unknown00"
+                    ),
+                )
+            ),
+            {},
+            "unknown exception_id",
+        ),
+        (
+            RuleExceptionResolution(
+                (
+                    RuleExceptionApplication(
+                        "REPO-001", "EXC-20260927-abcdef12"
+                    ),
+                )
+            ),
+            {
+                "EXC-20260927-abcdef12": governed_exception(
+                    rule_id="REPO-OTHER"
+                )
+            },
+            "rule_id",
+        ),
+    ],
+)
+def test_evidence_rejects_inconsistent_exception_resolution(
+    tmp_path,
+    resolution,
+    exceptions,
+    message,
+):
+    with pytest.raises(RuleEvidenceError, match=message):
+        build(
+            tmp_path,
+            registry=rules_registry(
+                {"REPO-001": rule(exception_policy="decision_required")}
+            ),
+            exceptions=exception_registry(exceptions),
+            results=[failed_result()],
+            exception_resolution=resolution,
+        )
+
+
+def test_evidence_rejects_waiver_when_rule_policy_is_forbidden(tmp_path):
+    exception_id = "EXC-20260927-abcdef12"
+    with pytest.raises(RuleEvidenceError, match="exception_policy"):
+        build(
+            tmp_path,
+            exceptions=exception_registry(
+                {exception_id: governed_exception()}
+            ),
+            results=[failed_result()],
+            exception_resolution=RuleExceptionResolution(
+                (RuleExceptionApplication("REPO-001", exception_id),)
+            ),
+        )
+
+
+def test_evidence_rejects_duplicate_resolution_applications(tmp_path):
+    exception_id = "EXC-20260927-abcdef12"
+    application = RuleExceptionApplication("REPO-001", exception_id)
+    with pytest.raises(RuleEvidenceError, match="duplicate"):
+        build(
+            tmp_path,
+            registry=rules_registry(
+                {"REPO-001": rule(exception_policy="decision_required")}
+            ),
+            exceptions=exception_registry(
+                {exception_id: governed_exception()}
+            ),
+            results=[failed_result()],
+            exception_resolution=RuleExceptionResolution(
+                (application, application)
+            ),
+        )
+
+
+def test_evidence_rejects_resolution_with_revoked_exception(tmp_path):
+    exception_id = "EXC-20260927-abcdef12"
+    revoked = {
+        **governed_exception(),
+        "state": "revoked",
+        "revoked_by": "project-owner",
+        "revoked_at": "2026-09-27T11:00:00Z",
+        "revocation_reason": "No longer approved.",
+    }
+
+    with pytest.raises(RuleEvidenceError, match="active exception"):
+        build(
+            tmp_path,
+            registry=rules_registry(
+                {"REPO-001": rule(exception_policy="decision_required")}
+            ),
+            exceptions=exception_registry({exception_id: revoked}),
+            results=[failed_result()],
+            exception_resolution=RuleExceptionResolution(
+                (RuleExceptionApplication("REPO-001", exception_id),)
+            ),
+        )

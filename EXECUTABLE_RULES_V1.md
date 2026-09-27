@@ -858,8 +858,25 @@ permanent
 `scope` is mandatory for every exception and follows the same safe path rules as Rule scope.
 An exception with broader scope than the affected violation must not apply outside its explicit scope.
 
+Exception scope matching is anchored to the repository root and consumes the
+complete canonical POSIX path. `*`, `?`, and character classes such as `[ab]`
+match only within one path segment. A segment that is exactly `**` matches zero
+or more complete segments. Thus `docs/*.md` does not match
+`docs/nested/file.md`, while `docs/**/*.md` matches both `docs/file.md` and
+`docs/nested/file.md`. Backslashes, absolute paths, parent traversal, and
+`.git/**` remain invalid.
+
+For a checker result that identifies multiple violating paths, one exception
+applies only when its scope covers every violating path. Partial coverage never
+produces a partial waiver. Repository path checkers use their reported path;
+knowledge field checks resolve every reported violating object ID to the
+canonical object path already present in Evaluation Context. Exception
+resolution does not re-read the filesystem.
+
 Temporary exceptions require `expires_at`.
 Permanent exceptions must not contain `expires_at`.
+Resolution receives an explicit timezone-aware `as_of` value. A temporary
+exception is expired when `as_of` is equal to or later than `expires_at`.
 
 For `state: revoked`, `revoked_by` and `revoked_at` are required.
 For `state: active`, revocation metadata is forbidden.
@@ -882,6 +899,9 @@ the raw result is FAIL
 ```
 
 Only then may effective status become WAIVED.
+
+If more than one exception is applicable to the same raw FAIL result,
+resolution fails closed as ambiguous; it does not choose by registry order.
 
 ERROR, PENDING, PASS, and NOT_APPLICABLE are never transformed to WAIVED.
 

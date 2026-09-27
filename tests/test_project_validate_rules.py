@@ -6,6 +6,7 @@ import pytest
 import project_system
 import project_system.validation as validation_module
 from project_system.cli import main
+from project_system.frontmatter import read_object, write_object
 from project_system.init_project import init_project
 from project_system.objects import create_object
 from project_system.process_runner import run_process
@@ -26,6 +27,7 @@ def rule(
     severity="ERROR",
     checkpoints=None,
     traceability=None,
+    exception_policy="forbidden",
 ):
     verification = {"method": method}
     if method == "deterministic":
@@ -43,7 +45,7 @@ def rule(
             "severity": severity,
             "checkpoints": checkpoints or ["project_validate"],
         },
-        "exception_policy": "forbidden",
+        "exception_policy": exception_policy,
     }
     if traceability is not None:
         value["traceability"] = traceability
@@ -61,6 +63,50 @@ def write_rules(root, rules):
         ),
         encoding="utf-8",
     )
+
+
+def write_exceptions(root, exceptions):
+    (root / EXCEPTIONS_PATH).write_text(
+        dump_yaml(
+            {
+                "schema_version": 1,
+                "profile": "project-system-rule-exceptions-v1",
+                "exceptions": exceptions,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def governed_exception(
+    rule_id,
+    decision_id,
+    *,
+    paths,
+    state="active",
+    mode="permanent",
+    expires_at=None,
+):
+    value = {
+        "rule_id": rule_id,
+        "state": state,
+        "mode": mode,
+        "reason": "Approved validation exception.",
+        "scope": {"paths": list(paths)},
+        "decision_id": decision_id,
+        "approved_by": "project-owner",
+        "approved_at": "2026-09-27T10:00:00Z",
+    }
+    if expires_at is not None:
+        value["expires_at"] = expires_at
+    if state == "revoked":
+        value.update(
+            {
+                "revoked_by": "project-owner",
+                "revoked_at": "2026-09-27T11:00:00Z",
+            }
+        )
+    return value
 
 
 def git_commit(root):
@@ -501,4 +547,289 @@ def test_evidence_context_fingerprint_is_checkout_location_independent(
     assert (
         report_a.rule_evidence.evidence_fingerprint
         == report_b.rule_evidence.evidence_fingerprint
+    )
+
+
+def prepare_waivable_required_path(root, *, paths=("missing-required-file",), **exception_overrides):
+    _, decision_id = create_object(
+        root,
+        "decision",
+        "Approve validation exception",
+        "governance",
+        "project-owner",
+    )
+    write_rules(
+        root,
+        {
+            "REPO-001": rule(
+                parameters={"path": "missing-required-file"},
+                severity="BLOCKING",
+                exception_policy="decision_required",
+            )
+        },
+    )
+    selected = governed_exception(
+        "REPO-001",
+        decision_id,
+        paths=paths,
+        **exception_overrides,
+    )
+    write_exceptions(root, {"EXC-20260927-abcdef12": selected})
+    return decision_id
+
+
+def test_project_validate_waives_only_effective_status_for_approved_failure(
+    tmp_path,
+    monkeypatch,
+):
+    root = init_project("Demo", tmp_path / "demo")
+    prepare_waivable_required_path(root)
+    git_commit(root)
+    monkeypatch.setattr(
+        validation_module,
+        "_utc_now",
+        lambda: validation_module.datetime(
+            2026, 9, 27, 12, 0, tzinfo=validation_module.timezone.utc
+        ),
+    )
+
+    report = validate_report(root)
+
+    item = report.rule_evidence.results[0]
+    assert item.raw_status == "FAIL"
+    assert item.effective_status == "WAIVED"
+    assert item.exception_id == "EXC-20260927-abcdef12"
+    assert report.rule_evidence.applied_exception_ids == (
+        "EXC-20260927-abcdef12",
+    )
+    issue = rule_issues(report, "REPO-001")[0]
+    assert issue[0] == "INFO"
+    assert "WAIVED" in issue[2]
+    assert "EXC-20260927-abcdef12" in issue[2]
+    assert not [
+        issue
+        for issue in rule_issues(report, "REPO-001")
+        if issue[0] in {"BLOCKING", "ERROR"}
+    ]
+    monkeypatch.setattr("project_system.cli.find_root", lambda: root)
+    with pytest.raises(SystemExit) as exit_info:
+        main(["validate"])
+    assert exit_info.value.code == 0
+
+
+@pytest.mark.parametrize(
+    "exception_overrides",
+    [
+        {"paths": ("somewhere-else/**",)},
+        {"paths": ("missing-required-file",), "state": "revoked"},
+        {
+            "paths": ("missing-required-file",),
+            "mode": "temporary",
+            "expires_at": "2026-09-27T12:00:00Z",
+        },
+    ],
+)
+def test_project_validate_keeps_fail_for_inapplicable_exception(
+    tmp_path,
+    monkeypatch,
+    exception_overrides,
+):
+    root = init_project("Demo", tmp_path / "demo")
+    exception_overrides = dict(exception_overrides)
+    paths = exception_overrides.pop("paths")
+    prepare_waivable_required_path(
+        root,
+        paths=paths,
+        **exception_overrides,
+    )
+    git_commit(root)
+    monkeypatch.setattr(
+        validation_module,
+        "_utc_now",
+        lambda: validation_module.datetime(
+            2026, 9, 27, 12, 0, tzinfo=validation_module.timezone.utc
+        ),
+    )
+
+    report = validate_report(root)
+
+    item = report.rule_evidence.results[0]
+    assert item.raw_status == item.effective_status == "FAIL"
+    assert item.exception_id is None
+    assert rule_issues(report, "REPO-001")[0][0] == "BLOCKING"
+
+
+def test_project_validate_rejects_ambiguous_applicable_exceptions(
+    tmp_path,
+    monkeypatch,
+):
+    root = init_project("Demo", tmp_path / "demo")
+    decision_id = prepare_waivable_required_path(root)
+    registry = load_yaml(root / EXCEPTIONS_PATH)
+    registry["exceptions"]["EXC-20260927-abcdef13"] = governed_exception(
+        "REPO-001",
+        decision_id,
+        paths=("missing-required-file",),
+    )
+    write_exceptions(root, registry["exceptions"])
+    git_commit(root)
+    monkeypatch.setattr(
+        validation_module,
+        "_utc_now",
+        lambda: validation_module.datetime(
+            2026, 9, 27, 12, 0, tzinfo=validation_module.timezone.utc
+        ),
+    )
+
+    report = validate_report(root)
+
+    assert report.rule_evidence is None
+    assert any(
+        level == "ERROR"
+        and location == "rules_exceptions"
+        and "multiple" in message
+        for level, location, message in report.issues
+    )
+
+
+def test_project_validate_does_not_waive_error_or_pending(tmp_path, monkeypatch):
+    root = init_project("Demo", tmp_path / "demo")
+    _, decision_id = create_object(
+        root,
+        "decision",
+        "Approve exception",
+        "governance",
+        "project-owner",
+    )
+    write_rules(
+        root,
+        {
+            "REQ-001": rule(
+                checker="knowledge.required_field",
+                parameters={"object_type": "feature", "field": "owner"},
+                exception_policy="decision_required",
+            ),
+            "PROC-001": rule(
+                method="human",
+                exception_policy="decision_required",
+            ),
+        },
+    )
+    write_exceptions(
+        root,
+        {
+            "EXC-20260927-abcdef12": governed_exception(
+                "REQ-001",
+                decision_id,
+                paths=("knowledge/**",),
+            ),
+            "EXC-20260927-abcdef13": governed_exception(
+                "PROC-001",
+                decision_id,
+                paths=("docs/**",),
+            ),
+        },
+    )
+    (root / "knowledge/features/broken.md").write_text(
+        "not frontmatter\n",
+        encoding="utf-8",
+    )
+    git_commit(root)
+
+    report = validate_report(root)
+    by_id = {item.rule_id: item for item in report.rule_evidence.results}
+
+    assert by_id["REQ-001"].raw_status == by_id["REQ-001"].effective_status == "ERROR"
+    assert by_id["PROC-001"].raw_status == by_id["PROC-001"].effective_status == "PENDING"
+    assert not report.rule_evidence.applied_exception_ids
+    assert rule_issues(report, "REQ-001")[0][0] == "ERROR"
+    monkeypatch.setattr("project_system.cli.find_root", lambda: root)
+    with pytest.raises(SystemExit) as exit_info:
+        main(["validate"])
+    assert exit_info.value.code == 2
+
+
+def test_knowledge_exception_requires_full_violation_scope(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    _, decision_id = create_object(
+        root,
+        "decision",
+        "Approve partial exception",
+        "governance",
+        "project-owner",
+    )
+    first_path, _ = create_object(root, "feature", "First", "product", "owner")
+    second_path, _ = create_object(root, "feature", "Second", "product", "owner")
+    for path in (first_path, second_path):
+        data, body = read_object(path)
+        data.pop("owner")
+        write_object(path, data, body)
+    write_rules(
+        root,
+        {
+            "REQ-001": rule(
+                checker="knowledge.required_field",
+                parameters={"object_type": "feature", "field": "owner"},
+                exception_policy="decision_required",
+            )
+        },
+    )
+    write_exceptions(
+        root,
+        {
+            "EXC-20260927-abcdef12": governed_exception(
+                "REQ-001",
+                decision_id,
+                paths=(first_path.relative_to(root).as_posix(),),
+            )
+        },
+    )
+    git_commit(root)
+
+    report = validate_report(root)
+
+    item = report.rule_evidence.results[0]
+    assert item.raw_status == item.effective_status == "FAIL"
+    assert item.exception_id is None
+
+
+def test_validation_clock_is_sampled_once_per_run_and_not_fingerprinted(
+    tmp_path,
+    monkeypatch,
+):
+    root = init_project("Demo", tmp_path / "demo")
+    prepare_waivable_required_path(
+        root,
+        mode="temporary",
+        expires_at="2026-09-27T13:00:00Z",
+    )
+    git_commit(root)
+
+    times = iter(
+        [
+            validation_module.datetime(
+                2026, 9, 27, 11, 0, tzinfo=validation_module.timezone.utc
+            ),
+            validation_module.datetime(
+                2026, 9, 27, 11, 30, tzinfo=validation_module.timezone.utc
+            ),
+        ]
+    )
+    calls = []
+
+    def fake_utc_now():
+        calls.append(None)
+        return next(times)
+
+    monkeypatch.setattr(validation_module, "_utc_now", fake_utc_now)
+
+    first = validate_report(root)
+    second = validate_report(root)
+
+    assert len(calls) == 2
+    assert first.rule_evidence.results[0].effective_status == "WAIVED"
+    assert second.rule_evidence.results[0].effective_status == "WAIVED"
+    assert (
+        first.rule_evidence.evidence_fingerprint
+        == second.rule_evidence.evidence_fingerprint
     )

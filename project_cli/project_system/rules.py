@@ -12,6 +12,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 import yaml
 
 from .frontmatter import StrictSafeLoader
+from .rule_checkers import checker_contract_messages
 from .utils import distribution_root, load_yaml
 
 
@@ -194,6 +195,16 @@ def _rule_semantic_messages(registry):
     messages = []
 
     for rule_id, rule in rules.items():
+        verification = rule["verification"]
+        if verification["method"] == "deterministic":
+            for message in checker_contract_messages(
+                verification["checker"],
+                verification.get("parameters"),
+            ):
+                messages.append(
+                    f"rules.{rule_id}.verification: {message}"
+                )
+
         scope = rule.get("scope")
         if scope is not None:
             for path in scope["paths"]:

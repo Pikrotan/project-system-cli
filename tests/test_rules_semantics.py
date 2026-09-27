@@ -2,6 +2,8 @@
 from project_system.utils import dump_yaml
 from project_system.validation import validate
 
+import pytest
+
 
 RULES_PATH = ".project/policies/rules.yaml"
 
@@ -23,6 +25,21 @@ def rule(*, scope=None, superseded_by=None):
         data["scope"] = {"paths": scope}
     if superseded_by is not None:
         data["superseded_by"] = superseded_by
+    return data
+
+
+_MISSING = object()
+
+
+def deterministic_rule(checker, parameters=_MISSING):
+    data = rule()
+    verification = {
+        "method": "deterministic",
+        "checker": checker,
+    }
+    if parameters is not _MISSING:
+        verification["parameters"] = parameters
+    data["verification"] = verification
     return data
 
 
@@ -100,6 +117,125 @@ def test_normalized_repository_relative_scope_is_valid(tmp_path):
     write_rules(
         root,
         {"ARCH-001": rule(scope=["lib/**", "docs/architecture/*.md"])},
+    )
+
+    assert not blocking_messages(root)
+
+
+@pytest.mark.parametrize(
+    ("checker", "parameters", "expected"),
+    [
+        ("repository.unknown", {"path": "README.md"}, "unknown deterministic checker"),
+        ("repository.required_path", _MISSING, "missing required parameter: path"),
+        (
+            "repository.required_path",
+            {"path": "README.md", "unexpected": True},
+            "unknown parameter: unexpected",
+        ),
+        (
+            "repository.required_path",
+            {"path": "../outside"},
+            "unsafe repository path parameter",
+        ),
+        (
+            "repository.required_path",
+            {"path": "/absolute"},
+            "unsafe repository path parameter",
+        ),
+        (
+            "repository.required_path",
+            {"path": r"docs\file.md"},
+            "unsafe repository path parameter",
+        ),
+        (
+            "repository.required_path",
+            {"path": "C:/project/file.md"},
+            "unsafe repository path parameter",
+        ),
+        (
+            "repository.required_path",
+            {"path": ".git/config"},
+            "unsafe repository path parameter",
+        ),
+        (
+            "repository.required_path",
+            {"path": "docs/*.md"},
+            "unsafe repository path parameter",
+        ),
+        (
+            "repository.required_path",
+            {"path": "bad\x00path"},
+            "unsafe repository path parameter",
+        ),
+        ("repository.forbidden_path", {}, "missing required parameter: path"),
+        (
+            "repository.forbidden_path",
+            {"path": "build", "glob": "**"},
+            "unknown parameter: glob",
+        ),
+        (
+            "knowledge.required_field",
+            {"field": "owner"},
+            "missing required parameter: object_type",
+        ),
+        (
+            "knowledge.required_field",
+            {"object_type": "feature"},
+            "missing required parameter: field",
+        ),
+        (
+            "knowledge.required_field",
+            {"object_type": "feature", "field": "owner", "nested": True},
+            "unknown parameter: nested",
+        ),
+        (
+            "knowledge.required_field",
+            {"object_type": "feature", "field": "metadata.owner"},
+            "top-level field name",
+        ),
+        (
+            "knowledge.required_field",
+            {"object_type": "unknown", "field": "owner"},
+            "canonical knowledge object type",
+        ),
+        (
+            "knowledge.required_field",
+            {"object_type": "feature", "field": ""},
+            "top-level field name",
+        ),
+    ],
+)
+def test_checker_specific_contracts_fail_closed(
+    tmp_path,
+    checker,
+    parameters,
+    expected,
+):
+    root = init_project("Demo", tmp_path / "demo")
+    selected = deterministic_rule(checker, parameters)
+    write_rules(root, {"REPO-001": selected})
+
+    assert any(expected in message for message in blocking_messages(root))
+
+
+def test_valid_checker_parameters_are_accepted(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    write_rules(
+        root,
+        {
+            "REPO-001": deterministic_rule(
+                "repository.required_path",
+                {"path": "README.md"},
+            ),
+            "REPO-002": deterministic_rule(
+                "repository.forbidden_path",
+                {"path": "build"},
+            ),
+            "REQ-001": deterministic_rule(
+                "knowledge.required_field",
+                {"object_type": "feature", "field": "owner"},
+            ),
+        },
     )
 
     assert not blocking_messages(root)

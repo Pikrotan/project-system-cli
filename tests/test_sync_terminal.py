@@ -11,7 +11,12 @@ import yaml
 
 from project_system.init_project import init_project
 from project_system.objects import create_object
-from project_system import sync_bindings, sync_finalization, sync_pull
+from project_system import (
+    sync_bindings,
+    sync_finalization,
+    sync_pull,
+    validation as validation_module,
+)
 from project_system.sync_bindings import (
     SyncBindingError, durable_roots, git_admin_dir, load_sync_bindings,
 )
@@ -39,7 +44,14 @@ def git(root, *args, check=True):
     return result.stdout.strip()
 
 
-def setup_project(tmp_path, monkeypatch, *, no_change=False, with_remote=False):
+def setup_project(
+    tmp_path,
+    monkeypatch,
+    *,
+    no_change=False,
+    with_remote=False,
+    configure=None,
+):
     root = init_project('Terminal project', tmp_path / 'project')
     obj, object_id = create_object(root, 'feature', 'Terminal fixture', 'general', 'owner')
     config_path = root / 'project.yaml'
@@ -48,6 +60,8 @@ def setup_project(tmp_path, monkeypatch, *, no_change=False, with_remote=False):
         'allowed_authors': ['owner'], 'expected_repository': REPO,
     })
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding='utf-8')
+    if configure is not None:
+        configure(root, obj, object_id)
     git(root, 'init', '-q')
     git(root, 'config', 'user.name', 'Terminal Tests')
     git(root, 'config', 'user.email', 'terminal@example.invalid')
@@ -101,6 +115,72 @@ def setup_project(tmp_path, monkeypatch, *, no_change=False, with_remote=False):
 def apply_and_verify(root, obj, path):
     obj.write_text(obj.read_text(encoding='utf-8') + '\nApproved terminal edit.\n', encoding='utf-8')
     verify_sync(root, path)
+
+
+def write_sync_rule_layer(root, *, temporary=False):
+    exceptions = {}
+    policy = 'forbidden'
+    path = 'README.md'
+    if temporary:
+        _, decision_id = create_object(
+            root, 'decision', 'Temporary terminal waiver', 'governance', 'project-owner',
+        )
+        policy = 'decision_required'
+        path = 'missing-sync-required'
+        exceptions['EXC-20260927-abcdef12'] = {
+            'rule_id': 'REPO-001',
+            'state': 'active',
+            'mode': 'temporary',
+            'reason': 'Temporary terminal completion waiver.',
+            'scope': {'paths': [path]},
+            'decision_id': decision_id,
+            'approved_by': 'project-owner',
+            'approved_at': '2026-09-27T10:00:00Z',
+            'expires_at': '2026-09-27T12:00:00Z',
+        }
+    rules = {
+        'REPO-001': {
+            'title': 'Terminal SYNC rule',
+            'status': 'active',
+            'category': 'repository',
+            'description': 'Exercise durable Stage 6 binding.',
+            'verification': {
+                'method': 'deterministic',
+                'checker': 'repository.required_path',
+                'parameters': {'path': path},
+            },
+            'enforcement': {
+                'severity': 'BLOCKING',
+                'checkpoints': ['sync_verify'],
+            },
+            'exception_policy': policy,
+        }
+    }
+    for name, document in (
+        ('rules.yaml', {
+            'schema_version': 1,
+            'profile': 'project-system-rules-v1',
+            'rules': rules,
+        }),
+        ('rule_exceptions.yaml', {
+            'schema_version': 1,
+            'profile': 'project-system-rule-exceptions-v1',
+            'exceptions': exceptions,
+        }),
+    ):
+        (root / '.project/policies' / name).write_text(
+            yaml.safe_dump(document, sort_keys=False), encoding='utf-8'
+        )
+
+
+def set_rule_time(monkeypatch, hour):
+    monkeypatch.setattr(
+        validation_module,
+        '_utc_now',
+        lambda: validation_module.datetime(
+            2026, 9, 27, hour, 0, tzinfo=validation_module.timezone.utc
+        ),
+    )
 
 
 def test_github_commit_only_is_awaiting_push_and_keeps_active_pack(tmp_path, monkeypatch):
@@ -178,6 +258,7 @@ def test_rejected_and_abandoned_need_clean_baseline(tmp_path, monkeypatch, outco
         root, path, complete=True, outcome=outcome, reason='Explicit owner disposition.',
     )
     assert report['terminal_outcome'] == outcome and not path.exists()
+    assert load_sync_bindings(root)[0].terminal['terminal']['rule_evidence_fingerprint'] is None
 
 
 def test_crash_after_publish_is_recoverable_but_mismatch_blocks(tmp_path, monkeypatch):
@@ -318,3 +399,102 @@ def test_git_admin_store_uses_git_discovery_not_root_assumption(tmp_path, monkey
     completed, transactions = durable_roots(root, create=True)
     assert completed.parent.parent == expected / 'project-system'
     assert transactions.parent == completed.parent
+
+
+def test_new_pushed_terminal_binding_preserves_rule_evidence_fingerprint(
+    tmp_path,
+    monkeypatch,
+):
+    root, obj, path, _, _, _, _ = setup_project(
+        tmp_path,
+        monkeypatch,
+        with_remote=True,
+        configure=lambda root, obj, object_id: write_sync_rule_layer(root),
+    )
+    apply_and_verify(root, obj, path)
+    verification = json.loads(
+        (root / '.generated/sync' / path.stem / 'verification.json').read_text(
+            encoding='utf-8'
+        )
+    )
+
+    finalize_sync(root, path, commit=True, push=True)
+
+    expected = verification['rule_evidence_binding']['evidence']['evidence_fingerprint']
+    binding = load_sync_bindings(root)[0]
+    assert binding.terminal['terminal']['rule_evidence_fingerprint'] == expected
+
+
+def test_no_active_rules_emit_null_terminal_rule_evidence_fingerprint(
+    tmp_path,
+    monkeypatch,
+):
+    root, _, path, *_ = setup_project(tmp_path, monkeypatch, no_change=True)
+    verify_sync(root, path)
+    finalize_sync(
+        root,
+        path,
+        complete=True,
+        outcome='reviewed-no-change',
+        reason='Reviewed by owner.',
+    )
+
+    assert load_sync_bindings(root)[0].terminal['terminal']['rule_evidence_fingerprint'] is None
+
+
+def test_historical_terminal_binding_without_optional_rule_fingerprint_stays_valid(
+    tmp_path,
+    monkeypatch,
+):
+    root, _, path, *_ = setup_project(tmp_path, monkeypatch, no_change=True)
+    verify_sync(root, path)
+    finalize_sync(
+        root,
+        path,
+        complete=True,
+        outcome='reviewed-no-change',
+        reason='Reviewed by owner.',
+    )
+    completed, _ = durable_roots(root)
+    binding_path = completed / path.stem / 'binding.json'
+    binding = json.loads(binding_path.read_text(encoding='utf-8'))
+    binding['terminal'].pop('rule_evidence_fingerprint')
+    binding = sync_bindings._seal(binding)
+    binding_path.write_text(
+        json.dumps(binding, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+    )
+
+    loaded = load_sync_bindings(root)
+
+    assert len(loaded) == 1
+    assert 'rule_evidence_fingerprint' not in loaded[0].terminal['terminal']
+
+
+def test_reviewed_no_change_rechecks_temporary_waiver_before_terminalization(
+    tmp_path,
+    monkeypatch,
+):
+    set_rule_time(monkeypatch, 11)
+    root, _, path, *_ = setup_project(
+        tmp_path,
+        monkeypatch,
+        no_change=True,
+        configure=lambda root, obj, object_id: write_sync_rule_layer(
+            root, temporary=True
+        ),
+    )
+    verify_sync(root, path)
+    set_rule_time(monkeypatch, 13)
+
+    with pytest.raises(SyncFinalizeIntegrityError, match='sync verify again'):
+        finalize_sync(
+            root,
+            path,
+            complete=True,
+            outcome='reviewed-no-change',
+            reason='Reviewed by owner.',
+        )
+
+    assert path.exists()
+    completed, _ = durable_roots(root)
+    assert not completed.exists() or not any(completed.iterdir())

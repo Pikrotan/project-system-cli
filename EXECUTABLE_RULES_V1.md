@@ -442,9 +442,13 @@ These remain noncanonical and disposable.
 
 Existing SYNC already provides integrity, scope, Skill evidence, validation evidence, and exact-state fingerprints.
 
-`sync verify` will later evaluate the same Rule Engine and bind rule-registry hashes, rule hashes, exception identity, results, and evidence fingerprint to the verified working-tree state.
+`sync verify` evaluates the Rule Engine at the `sync_verify` checkpoint during its second validation pass. Its successful report binds the common Rule Evidence payload, including registry and rule hashes, exception identity, raw and effective results, and the Evidence fingerprint, to the exact verified working-tree fingerprint. The same binding is retained in a scope-safe failed validation report so the failure remains auditable.
 
-Finalization must recheck the same bound state before commit preparation.
+Finalization validates the stored binding and re-evaluates `sync_verify` Rules against the same base commit before dry-run preparation, first commit, first commit-and-push, or reviewed-no-change completion. Any Rule Evidence drift, including an expired or revoked exception, makes verification stale and requires `project sync verify` again. A retry of an already recorded commit or push does not re-evaluate current Rules because the committed canonical bytes are already fixed.
+
+Completed terminal bindings may carry the Rule Evidence fingerprint. New pushed and reviewed-no-change outcomes emit it; rejected and abandoned outcomes use `null`. The field remains optional so terminal records created before this binding existed remain schema-valid.
+
+Rule Evidence does not grant semantic approval. Human review remains authoritative for meaning-changing changes, and no separate canonical Rules result is created outside the existing validation, SYNC report, and terminal-binding lifecycle.
 
 ### GitHub and CI
 

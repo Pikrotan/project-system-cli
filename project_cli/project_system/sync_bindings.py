@@ -433,9 +433,19 @@ def completed_binding(root, pack_id):
     return None
 
 
-def build_terminal_binding(pack, raw, *, outcome, reason, verification_fingerprint=None,
-                           commit_sha=None, verified_paths=None, push_proof=None,
-                           completed_at=None):
+def build_terminal_binding(
+    pack,
+    raw,
+    *,
+    outcome,
+    reason,
+    verification_fingerprint=None,
+    rule_evidence_fingerprint=None,
+    commit_sha=None,
+    verified_paths=None,
+    push_proof=None,
+    completed_at=None,
+):
     provenance = pack.get('provenance') or {}
     transport = provenance.get('transport')
     if not isinstance(transport, dict) or transport.get('kind') != 'github_issue':
@@ -450,6 +460,7 @@ def build_terminal_binding(pack, raw, *, outcome, reason, verification_fingerpri
         'authorization': 'explicit_cli',
         'reason': reason,
         'verification_fingerprint': verification_fingerprint,
+        'rule_evidence_fingerprint': rule_evidence_fingerprint,
         'commit_sha': commit_sha,
         'verified_canonical_paths': sorted(verified_paths or []),
         'push_proof': push_proof,

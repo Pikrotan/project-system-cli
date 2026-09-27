@@ -5,6 +5,7 @@ import subprocess
 import pytest
 import yaml
 
+from project_system import validation as validation_module
 from project_system.cli import main
 from project_system.frontmatter import read_object, write_object
 from project_system.init_project import init_project
@@ -80,10 +81,18 @@ def _update_change(object_id):
     }
 
 
-def _setup_update_plan(tmp_path, *, extra_changes=None, extra_targets=None):
+def _setup_update_plan(
+    tmp_path,
+    *,
+    extra_changes=None,
+    extra_targets=None,
+    configure=None,
+):
     root = init_project('Demo', tmp_path / 'demo')
     path, object_id = create_object(root, 'feature', 'Search', 'general', 'owner')
     path = path.rename(path.with_name(f'{object_id}-search.md'))
+    if configure is not None:
+        configure(root, path, object_id)
     head = _commit_project(root)
     changes = [_update_change(object_id), *(extra_changes or [])]
     targets = [object_id, *(extra_targets or [])]
@@ -99,6 +108,77 @@ def _append_body(path, text='\nExternally applied deterministic test edit.\n'):
 
 def _load_report(output):
     return json.loads((output / 'verification.json').read_text(encoding='utf-8'))
+
+
+def _sync_rule(
+    *,
+    method='deterministic',
+    checker='repository.required_path',
+    path='README.md',
+    severity='BLOCKING',
+    exception_policy='forbidden',
+):
+    verification = {'method': method}
+    if method == 'deterministic':
+        verification.update(checker=checker, parameters={'path': path})
+    return {
+        'title': 'SYNC verification rule',
+        'status': 'active',
+        'category': 'repository',
+        'description': 'Exercise Stage 6 SYNC Rule Evidence binding.',
+        'verification': verification,
+        'enforcement': {
+            'severity': severity,
+            'checkpoints': ['sync_verify'],
+        },
+        'exception_policy': exception_policy,
+    }
+
+
+def _write_rule_layer(root, rules, exceptions=None):
+    (root / '.project/policies/rules.yaml').write_text(
+        yaml.safe_dump(
+            {
+                'schema_version': 1,
+                'profile': 'project-system-rules-v1',
+                'rules': rules,
+            },
+            sort_keys=False,
+        ),
+        encoding='utf-8',
+    )
+    (root / '.project/policies/rule_exceptions.yaml').write_text(
+        yaml.safe_dump(
+            {
+                'schema_version': 1,
+                'profile': 'project-system-rule-exceptions-v1',
+                'exceptions': exceptions or {},
+            },
+            sort_keys=False,
+        ),
+        encoding='utf-8',
+    )
+
+
+def _governed_exception(rule_id, decision_id, *, state='active', expires_at=None):
+    value = {
+        'rule_id': rule_id,
+        'state': state,
+        'mode': 'temporary' if expires_at else 'permanent',
+        'reason': 'Approved SYNC verification exception.',
+        'scope': {'paths': ['missing-sync-required']},
+        'decision_id': decision_id,
+        'approved_by': 'project-owner',
+        'approved_at': '2026-09-27T10:00:00Z',
+    }
+    if expires_at:
+        value['expires_at'] = expires_at
+    if state == 'revoked':
+        value.update(
+            revoked_by='project-owner',
+            revoked_at='2026-09-27T10:30:00Z',
+        )
+    return value
 
 
 def test_valid_allowed_slugged_edit_and_no_commit(tmp_path):
@@ -122,6 +202,12 @@ def test_valid_allowed_slugged_edit_and_no_commit(tmp_path):
     assert _git(root, 'rev-parse', 'HEAD') == head
     assert {'verification.json', 'verification.md', 'diff-summary.md'} <= {
         item.name for item in output.iterdir()
+    }
+    binding = report['rule_evidence_binding']
+    assert binding == {
+        'checkpoint': 'sync_verify',
+        'verified_working_tree_fingerprint': report['verification_fingerprint'],
+        'evidence': None,
     }
 
 
@@ -505,3 +591,222 @@ def test_planning_rejects_dirty_baseline(tmp_path):
 
     with pytest.raises(SyncPlanError, match='planning requires a clean working tree'):
         plan_sync(root, pack_path)
+
+
+def test_sync_verify_persists_common_pass_evidence_bound_to_exact_state(tmp_path):
+    def configure(root, path, object_id):
+        _write_rule_layer(root, {'REPO-001': _sync_rule()})
+
+    root, path, _, head, _, pack_path, _, _ = _setup_update_plan(
+        tmp_path, configure=configure,
+    )
+    _append_body(path)
+
+    _, report = verify_sync(root, pack_path)
+
+    binding = report['rule_evidence_binding']
+    evidence = binding['evidence']
+    assert binding['checkpoint'] == 'sync_verify'
+    assert binding['verified_working_tree_fingerprint'] == report['verification_fingerprint']
+    assert evidence['checkpoint'] == 'sync_verify'
+    assert evidence['git_head'] == head
+    assert evidence['base_commit'] == head
+    assert evidence['results'][0]['raw_status'] == 'PASS'
+    assert evidence['results'][0]['effective_status'] == 'PASS'
+    assert len(evidence['rules_registry_sha256']) == 64
+    assert len(evidence['exception_registry_sha256']) == 64
+    assert 'rules_registry_sha256' not in report
+
+
+def test_sync_only_blocking_fail_persists_evidence_and_uses_validation_exit(tmp_path):
+    def configure(root, path, object_id):
+        _write_rule_layer(
+            root, {'REPO-001': _sync_rule(path='missing-sync-required')},
+        )
+
+    root, path, _, _, _, pack_path, output, _ = _setup_update_plan(
+        tmp_path, configure=configure,
+    )
+    _append_body(path)
+
+    with pytest.raises(SyncValidationError) as exc_info:
+        verify_sync(root, pack_path)
+
+    assert exc_info.value.exit_code == 5
+    report = _load_report(output)
+    assert report['verification_result'] == 'failed_validation'
+    result = report['rule_evidence_binding']['evidence']['results'][0]
+    assert result['raw_status'] == result['effective_status'] == 'FAIL'
+    assert report['rule_evidence_binding']['verified_working_tree_fingerprint'] == report['verification_fingerprint']
+
+
+def test_sync_only_blocking_fail_can_be_governedly_waived(tmp_path):
+    exception_id = 'EXC-20260927-abcdef12'
+
+    def configure(root, path, object_id):
+        _, decision_id = create_object(
+            root, 'decision', 'Approve SYNC exception', 'governance', 'project-owner',
+        )
+        _write_rule_layer(
+            root,
+            {'REPO-001': _sync_rule(
+                path='missing-sync-required', exception_policy='decision_required',
+            )},
+            {exception_id: _governed_exception('REPO-001', decision_id)},
+        )
+
+    root, path, _, _, _, pack_path, _, _ = _setup_update_plan(
+        tmp_path, configure=configure,
+    )
+    _append_body(path)
+
+    _, report = verify_sync(root, pack_path)
+
+    evidence = report['rule_evidence_binding']['evidence']
+    result = evidence['results'][0]
+    assert report['verification_result'] == 'passed'
+    assert result['raw_status'] == 'FAIL'
+    assert result['effective_status'] == 'WAIVED'
+    assert result['exception_id'] == exception_id
+    assert evidence['applied_exception_ids'] == [exception_id]
+
+
+@pytest.mark.parametrize(
+    ('state', 'expires_at'),
+    [('revoked', None), ('active', '2026-09-27T12:00:00Z')],
+)
+def test_revoked_or_expired_sync_exception_does_not_waive(
+    tmp_path, monkeypatch, state, expires_at,
+):
+    def configure(root, path, object_id):
+        _, decision_id = create_object(
+            root, 'decision', 'Exception decision', 'governance', 'project-owner',
+        )
+        _write_rule_layer(
+            root,
+            {'REPO-001': _sync_rule(
+                path='missing-sync-required', exception_policy='decision_required',
+            )},
+            {'EXC-20260927-abcdef12': _governed_exception(
+                'REPO-001', decision_id, state=state, expires_at=expires_at,
+            )},
+        )
+
+    root, path, _, _, _, pack_path, output, _ = _setup_update_plan(
+        tmp_path, configure=configure,
+    )
+    _append_body(path)
+    monkeypatch.setattr(
+        validation_module, '_utc_now',
+        lambda: validation_module.datetime(
+            2026, 9, 27, 12, 0, tzinfo=validation_module.timezone.utc
+        ),
+    )
+
+    with pytest.raises(SyncValidationError):
+        verify_sync(root, pack_path)
+
+    result = _load_report(output)['rule_evidence_binding']['evidence']['results'][0]
+    assert result['raw_status'] == result['effective_status'] == 'FAIL'
+
+
+def test_sync_pending_blocking_rule_fails_verification(tmp_path):
+    def configure(root, path, object_id):
+        _write_rule_layer(
+            root, {'PROC-001': _sync_rule(method='human', severity='BLOCKING')},
+        )
+
+    root, path, _, _, _, pack_path, output, _ = _setup_update_plan(
+        tmp_path, configure=configure,
+    )
+    _append_body(path)
+
+    with pytest.raises(SyncValidationError):
+        verify_sync(root, pack_path)
+
+    result = _load_report(output)['rule_evidence_binding']['evidence']['results'][0]
+    assert result['raw_status'] == result['effective_status'] == 'PENDING'
+
+
+@pytest.mark.parametrize('severity', ['WARNING', 'INFO'])
+def test_sync_pending_nonblocking_rule_remains_visible_and_passes(
+    tmp_path, severity,
+):
+    def configure(root, path, object_id):
+        _write_rule_layer(
+            root, {'PROC-001': _sync_rule(method='human', severity=severity)},
+        )
+
+    root, path, _, _, _, pack_path, _, _ = _setup_update_plan(
+        tmp_path, configure=configure,
+    )
+    _append_body(path)
+
+    _, report = verify_sync(root, pack_path)
+
+    assert report['verification_result'] == 'passed'
+    result = report['rule_evidence_binding']['evidence']['results'][0]
+    assert result['raw_status'] == result['effective_status'] == 'PENDING'
+    assert report['validation']['after_generation']['counts'][severity] == 1
+
+
+def test_sync_error_cannot_be_waived(tmp_path, monkeypatch):
+    from project_system import rule_checkers
+
+    def configure(root, path, object_id):
+        _, decision_id = create_object(
+            root, 'decision', 'Exception decision', 'governance', 'project-owner',
+        )
+        _write_rule_layer(
+            root,
+            {'REPO-001': _sync_rule(
+                path='missing-sync-required', exception_policy='decision_required',
+            )},
+            {'EXC-20260927-abcdef12': _governed_exception(
+                'REPO-001', decision_id,
+            )},
+        )
+
+    root, path, _, _, _, pack_path, output, _ = _setup_update_plan(
+        tmp_path, configure=configure,
+    )
+    _append_body(path)
+    monkeypatch.setattr(
+        rule_checkers, '_inspect_repository_path',
+        lambda *args: (_ for _ in ()).throw(
+            rule_checkers._FilesystemInspectionError('simulated inspection error')
+        ),
+    )
+
+    with pytest.raises(SyncValidationError):
+        verify_sync(root, pack_path)
+
+    result = _load_report(output)['rule_evidence_binding']['evidence']['results'][0]
+    assert result['raw_status'] == result['effective_status'] == 'ERROR'
+    assert result['exception_id'] is None
+
+def test_repeated_sync_verify_with_rule_evidence_is_byte_identical(tmp_path):
+    def configure(root, path, object_id):
+        _write_rule_layer(root, {'REPO-001': _sync_rule()})
+
+    root, path, _, _, _, pack_path, output, _ = _setup_update_plan(
+        tmp_path,
+        configure=configure,
+    )
+    _append_body(path)
+
+    verify_sync(root, pack_path)
+    first = {
+        name: (output / name).read_bytes()
+        for name in ('verification.json', 'verification.md', 'diff-summary.md')
+    }
+
+    verify_sync(root, pack_path)
+    second = {
+        name: (output / name).read_bytes()
+        for name in ('verification.json', 'verification.md', 'diff-summary.md')
+    }
+
+    assert first == second
+    report = _load_report(output)
+    assert report['rule_evidence_binding']['evidence'] is not None

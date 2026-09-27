@@ -24,6 +24,7 @@
         "authorization": {"const": "explicit_cli"},
         "reason": {"type": ["string", "null"]},
         "verification_fingerprint": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "rule_evidence_fingerprint": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
         "commit_sha": {"oneOf": [{"type": "string", "pattern": "^[0-9a-f]{40}$"}, {"type": "null"}]},
         "verified_canonical_paths": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
         "push_proof": {

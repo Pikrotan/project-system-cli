@@ -7,6 +7,11 @@ import subprocess
 import uuid
 
 from .process_runner import run_process
+from .rule_evidence import (
+    EVIDENCE_SCHEMA_VERSION,
+    RuleEvidenceError,
+    canonical_sha256,
+)
 from .sync_planning import SyncPlanError, _write_output
 from .sync_bindings import (
     DURABLE_PACK_ID,
@@ -26,10 +31,12 @@ from .sync_verification import (
     _repo_relative,
     _resolve_integrity_inputs,
     _scope_analysis,
+    build_rule_evidence_binding,
     collect_git_changes,
     verification_report_payload_sha256,
     verified_working_tree_state,
 )
+from .validation import validate_report
 
 
 INTEGRITY_EXIT = 3
@@ -39,6 +46,20 @@ PUSH_EXIT = 7
 COMMIT_SHA_RE = re.compile(r'^[0-9a-f]{40}$')
 MAX_COMMIT_MESSAGE_CHARS = 4096
 COMPLETE_OUTCOMES = {'reviewed-no-change', 'rejected', 'abandoned'}
+RULE_EVIDENCE_FIELDS = {
+    'schema_version',
+    'project_id',
+    'git_head',
+    'base_commit',
+    'cli_version',
+    'checkpoint',
+    'rules_registry_sha256',
+    'exception_registry_sha256',
+    'evaluation_context_sha256',
+    'results',
+    'applied_exception_ids',
+    'evidence_fingerprint',
+}
 
 
 class SyncFinalizeError(RuntimeError):
@@ -186,6 +207,106 @@ def _verify_sha256(value, label):
         raise SyncFinalizeIntegrityError(f'{label} must be a lowercase SHA-256 digest')
 
 
+def _validate_rule_evidence_binding(report, plan):
+    binding = report.get('rule_evidence_binding')
+    if not isinstance(binding, dict) or set(binding) != {
+        'checkpoint',
+        'verified_working_tree_fingerprint',
+        'evidence',
+    }:
+        raise SyncFinalizeIntegrityError(
+            'Stage 6 Rule Evidence binding is missing or malformed; '
+            'run project sync verify again'
+        )
+    if binding.get('checkpoint') != 'sync_verify':
+        raise SyncFinalizeIntegrityError(
+            'Rule Evidence binding checkpoint must be sync_verify; '
+            'run project sync verify again'
+        )
+    if binding.get('verified_working_tree_fingerprint') != report.get(
+        'verification_fingerprint'
+    ):
+        raise SyncFinalizeIntegrityError(
+            'Rule Evidence binding working-tree fingerprint is inconsistent; '
+            'run project sync verify again'
+        )
+    evidence = binding.get('evidence')
+    if evidence is None:
+        return
+    if not isinstance(evidence, dict) or set(evidence) != RULE_EVIDENCE_FIELDS:
+        raise SyncFinalizeIntegrityError(
+            'nested Rule Evidence structure is malformed; '
+            'run project sync verify again'
+        )
+    expected_values = {
+        'schema_version': EVIDENCE_SCHEMA_VERSION,
+        'project_id': plan['project_id'],
+        'git_head': plan['base_commit'],
+        'base_commit': plan['base_commit'],
+        'checkpoint': 'sync_verify',
+    }
+    for field, expected in expected_values.items():
+        if evidence.get(field) != expected:
+            raise SyncFinalizeIntegrityError(
+                f'nested Rule Evidence differs from {field}; '
+                'run project sync verify again'
+            )
+    for field in (
+        'rules_registry_sha256',
+        'exception_registry_sha256',
+        'evaluation_context_sha256',
+        'evidence_fingerprint',
+    ):
+        _verify_sha256(evidence.get(field), f'Rule Evidence {field}')
+    if not isinstance(evidence.get('results'), list):
+        raise SyncFinalizeIntegrityError('Rule Evidence results must be a list')
+    if not isinstance(evidence.get('applied_exception_ids'), list):
+        raise SyncFinalizeIntegrityError(
+            'Rule Evidence applied_exception_ids must be a list'
+        )
+    payload = dict(evidence)
+    fingerprint = payload.pop('evidence_fingerprint')
+    try:
+        expected_fingerprint = canonical_sha256(payload)
+    except RuleEvidenceError as exc:
+        raise SyncFinalizeIntegrityError(
+            f'nested Rule Evidence is not canonical: {exc}'
+        ) from exc
+    if fingerprint != expected_fingerprint:
+        raise SyncFinalizeIntegrityError(
+            'nested Rule Evidence fingerprint mismatch; '
+            'run project sync verify again'
+        )
+
+
+def _rule_evidence_fingerprint(verification):
+    binding = verification.get('rule_evidence_binding')
+    if binding is None:
+        return None
+    evidence = binding['evidence']
+    return evidence['evidence_fingerprint'] if evidence is not None else None
+
+
+def _recheck_rule_evidence(root, integrity, verification):
+    current = validate_report(
+        root,
+        rule_checkpoint='sync_verify',
+        rule_base_commit=integrity['plan']['base_commit'],
+    )
+    if any(level in {'BLOCKING', 'ERROR'} for level, _, _ in current.issues):
+        raise SyncFinalizeIntegrityError(
+            'current sync_verify Rules do not pass; run project sync verify again'
+        )
+    rebuilt = build_rule_evidence_binding(
+        current,
+        verification['verification_fingerprint'],
+    )
+    if rebuilt != verification['rule_evidence_binding']:
+        raise SyncFinalizeIntegrityError(
+            'Rule Evidence changed after verification; run project sync verify again'
+        )
+
+
 def _load_verification(output, plan):
     try:
         report = _read_json_artifact(output, 'verification.json')
@@ -257,6 +378,7 @@ def _load_verification(output, plan):
         raise SyncFinalizeIntegrityError(
             'verification canonical change set is malformed or contains non-canonical paths'
         )
+    _validate_rule_evidence_binding(report, plan)
     return report
 
 
@@ -327,6 +449,7 @@ def _base_report(integrity, verification, preflight, commit_requested, push_requ
         'pack_hash': integrity['plan']['pack_content_sha256'],
         'base_commit': integrity['plan']['base_commit'],
         'verification_fingerprint': verification['verification_fingerprint'],
+        'rule_evidence_fingerprint': _rule_evidence_fingerprint(verification),
         'current_head': integrity['head'],
         'branch': preflight['branch'],
         'upstream': preflight['upstream'],
@@ -376,6 +499,8 @@ def _markdown_report(report):
         f"- State: **{report['state']}**",
         f"- Pack SHA-256: `{report['pack_hash']}`",
         f"- Verification fingerprint: `{report['verification_fingerprint']}`",
+        '- Rule Evidence fingerprint: '
+        f"`{report['rule_evidence_fingerprint'] or 'none'}`",
         f"- Base commit: `{report['base_commit']}`",
         f"- Current HEAD: `{report['current_head']}`",
         f"- Branch: `{report['branch']}`",
@@ -682,6 +807,9 @@ def _publish_terminal(root, integrity, *, outcome, reason, verification=None, re
     pack = integrity['pack']
     raw = integrity['pack_path'].read_bytes()
     fingerprint = verification.get('verification_fingerprint') if verification else None
+    rule_fingerprint = (
+        _rule_evidence_fingerprint(verification) if verification else None
+    )
     commit_sha = report.get('commit_sha') if report else None
     paths = verification.get('actual_changed_canonical_paths', []) if verification else []
     push_proof = None
@@ -698,6 +826,7 @@ def _publish_terminal(root, integrity, *, outcome, reason, verification=None, re
             outcome=outcome,
             reason=reason,
             verification_fingerprint=fingerprint,
+            rule_evidence_fingerprint=rule_fingerprint,
             commit_sha=commit_sha,
             verified_paths=paths,
             push_proof=push_proof,
@@ -746,6 +875,7 @@ def _complete_without_commit(root, selector, outcome, reason):
     if outcome == 'reviewed-no-change':
         verification = _load_verification(integrity['output'], plan)
         _current_verified_state(root, integrity, verification)
+        _recheck_rule_evidence(root, integrity, verification)
         if verification['actual_changed_canonical_paths']:
             raise SyncFinalizeScopeError('reviewed-no-change cannot complete canonical edits')
     pseudo_verification = verification or {
@@ -874,8 +1004,15 @@ def finalize_sync(root, selector, *, commit=False, push=False, message=None,
     )
 
     try:
-        if previous and previous.get('commit_sha'):
-            for field in ('pack_id', 'pack_hash', 'base_commit', 'verification_fingerprint'):
+        already_committed = bool(previous and previous.get('commit_sha'))
+        if already_committed:
+            for field in (
+                'pack_id',
+                'pack_hash',
+                'base_commit',
+                'verification_fingerprint',
+                'rule_evidence_fingerprint',
+            ):
                 if previous.get(field) != report.get(field):
                     raise SyncFinalizeIntegrityError(
                         f'previous finalization does not match {field}'
@@ -895,6 +1032,8 @@ def finalize_sync(root, selector, *, commit=False, push=False, message=None,
             )
 
         changes, _ = _current_verified_state(root, integrity, verification)
+        if not already_committed:
+            _recheck_rule_evidence(root, integrity, verification)
         report['staged_paths'] = _paths_from_records(changes['staged'])
 
         if commit and not report.get('commit_sha'):

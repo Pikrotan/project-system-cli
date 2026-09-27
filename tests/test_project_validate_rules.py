@@ -833,3 +833,74 @@ def test_validation_clock_is_sampled_once_per_run_and_not_fingerprinted(
         first.rule_evidence.evidence_fingerprint
         == second.rule_evidence.evidence_fingerprint
     )
+
+
+def test_validate_report_supports_explicit_sync_checkpoint_and_base_commit(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    write_rules(
+        root,
+        {
+            "REPO-001": rule(
+                checkpoints=["sync_verify"],
+                severity="BLOCKING",
+            )
+        },
+    )
+    head = git_commit(root)
+
+    default_report = validate_report(root)
+    sync_report = validate_report(
+        root,
+        rule_checkpoint="sync_verify",
+        rule_base_commit=head,
+    )
+
+    assert default_report.rule_evidence.checkpoint == "project_validate"
+    assert default_report.rule_evidence.base_commit is None
+    assert default_report.rule_evidence.results[0].raw_status == "NOT_APPLICABLE"
+    assert sync_report.rule_evidence.checkpoint == "sync_verify"
+    assert sync_report.rule_evidence.git_head == head
+    assert sync_report.rule_evidence.base_commit == head
+    assert sync_report.rule_evidence.results[0].raw_status == "PASS"
+    assert validate(root) == list(default_report.issues)
+
+
+def test_validate_report_rejects_unknown_rule_checkpoint(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    with pytest.raises(ValueError, match="checkpoint"):
+        validate_report(root, rule_checkpoint="unknown_checkpoint")
+
+
+def test_validate_report_uses_explicit_exception_clock_without_sampling_wall_clock(
+    tmp_path,
+    monkeypatch,
+):
+    root = init_project("Demo", tmp_path / "demo")
+    prepare_waivable_required_path(
+        root,
+        mode="temporary",
+        expires_at="2026-09-27T12:00:00Z",
+    )
+    head = git_commit(root)
+    monkeypatch.setattr(
+        validation_module,
+        "_utc_now",
+        lambda: (_ for _ in ()).throw(AssertionError("wall clock sampled")),
+    )
+
+    report = validate_report(
+        root,
+        rule_checkpoint="project_validate",
+        rule_base_commit=head,
+        rule_as_of=validation_module.datetime(
+            2026,
+            9,
+            27,
+            11,
+            59,
+            tzinfo=validation_module.timezone.utc,
+        ),
+    )
+
+    assert report.rule_evidence.results[0].effective_status == "WAIVED"
+    assert report.rule_evidence.base_commit == head

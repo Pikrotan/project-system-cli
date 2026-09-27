@@ -13,7 +13,11 @@ from .object_loader import load_object_layer
 from .skills import inspect_skill_layer
 from .rules import inspect_rules_layer, validate_rule_references
 from .process_runner import run_process
-from .rule_engine import RuleEvaluationContext, evaluate_rules
+from .rule_engine import (
+    RuleEvaluationContext,
+    SUPPORTED_CHECKPOINTS,
+    evaluate_rules,
+)
 from .rule_evidence import RuleEvidence, RuleEvidenceError, build_rule_evidence
 from .rule_exceptions import (
     RuleExceptionResolutionError,
@@ -128,7 +132,15 @@ def _rule_issues(results):
     return issues
 
 
-def validate_report(root):
+def validate_report(
+    root,
+    *,
+    rule_checkpoint='project_validate',
+    rule_base_commit=None,
+    rule_as_of=None,
+):
+    if rule_checkpoint not in SUPPORTED_CHECKPOINTS:
+        raise ValueError(f'unsupported rule checkpoint: {rule_checkpoint!r}')
     issues=[]
     cfg=load_yaml(Path(root)/'project.yaml')
     project_schema_messages=list(validate_project_schema(cfg))
@@ -187,7 +199,7 @@ def validate_report(root):
             issues.append(('ERROR','rules_evidence',str(exc)))
         else:
             context=RuleEvaluationContext(
-                project_root=Path(root),checkpoint='project_validate',
+                project_root=Path(root),checkpoint=rule_checkpoint,
                 objects=layer.objects,
                 object_layer_complete=_object_layer_is_complete(layer),
             )
@@ -198,7 +210,7 @@ def validate_report(root):
                     rule_layer.exception_registry,
                     context,
                     results,
-                    as_of=_utc_now(),
+                    as_of=_utc_now() if rule_as_of is None else rule_as_of,
                 )
             except RuleExceptionResolutionError as exc:
                 issues.append((
@@ -208,7 +220,8 @@ def validate_report(root):
             else:
                 try:
                     evidence=build_rule_evidence(
-                        project_id=_project_id(cfg),git_head=git_head,base_commit=None,
+                        project_id=_project_id(cfg),git_head=git_head,
+                        base_commit=rule_base_commit,
                         cli_version=__version__,rules_registry=rule_layer.rules_registry,
                         exception_registry=rule_layer.exception_registry,
                         context=context,results=results,

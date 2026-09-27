@@ -6,6 +6,7 @@ import subprocess
 import pytest
 import yaml
 
+from project_system import sync_verification, validation as validation_module
 from project_system.cli import main
 from project_system.frontmatter import read_object, write_object
 from project_system.init_project import init_project
@@ -81,10 +82,12 @@ def _update_change(object_id):
     }
 
 
-def _setup_plan(tmp_path, *, with_remote=False):
+def _setup_plan(tmp_path, *, with_remote=False, configure=None):
     root = init_project('Demo', tmp_path / 'demo')
     path, object_id = create_object(root, 'feature', 'Search', 'general', 'owner')
     path = path.rename(path.with_name(f'{object_id}-search.md'))
+    if configure is not None:
+        configure(root, path, object_id)
     head = _commit_project(root)
     remote = None
     if with_remote:
@@ -98,8 +101,10 @@ def _setup_plan(tmp_path, *, with_remote=False):
     return root, path, object_id, head, pack, pack_path, output, remote
 
 
-def _setup_verified(tmp_path, *, with_remote=False):
-    values = _setup_plan(tmp_path, with_remote=with_remote)
+def _setup_verified(tmp_path, *, with_remote=False, configure=None):
+    values = _setup_plan(
+        tmp_path, with_remote=with_remote, configure=configure,
+    )
     root, path, _, _, _, pack_path, _, _ = values
     path.write_text(
         path.read_text(encoding='utf-8') + '\nExternally approved edit.\n',
@@ -113,6 +118,75 @@ def _load_finalization(output):
     return json.loads((output / 'finalization.json').read_text(encoding='utf-8'))
 
 
+def _write_rule_layer(root, rules, exceptions=None):
+    (root / '.project/policies/rules.yaml').write_text(
+        yaml.safe_dump({
+            'schema_version': 1,
+            'profile': 'project-system-rules-v1',
+            'rules': rules,
+        }, sort_keys=False),
+        encoding='utf-8',
+    )
+    (root / '.project/policies/rule_exceptions.yaml').write_text(
+        yaml.safe_dump({
+            'schema_version': 1,
+            'profile': 'project-system-rule-exceptions-v1',
+            'exceptions': exceptions or {},
+        }, sort_keys=False),
+        encoding='utf-8',
+    )
+
+
+def _temporary_waiver_configuration(root, path, object_id):
+    _, decision_id = create_object(
+        root, 'decision', 'Temporary SYNC waiver', 'governance', 'project-owner',
+    )
+    _write_rule_layer(
+        root,
+        {
+            'REPO-001': {
+                'title': 'Temporary waiver rule',
+                'status': 'active',
+                'category': 'repository',
+                'description': 'Require a deliberately missing path during SYNC.',
+                'verification': {
+                    'method': 'deterministic',
+                    'checker': 'repository.required_path',
+                    'parameters': {'path': 'missing-sync-required'},
+                },
+                'enforcement': {
+                    'severity': 'BLOCKING',
+                    'checkpoints': ['sync_verify'],
+                },
+                'exception_policy': 'decision_required',
+            }
+        },
+        {
+            'EXC-20260927-abcdef12': {
+                'rule_id': 'REPO-001',
+                'state': 'active',
+                'mode': 'temporary',
+                'reason': 'Temporary Stage 6 test waiver.',
+                'scope': {'paths': ['missing-sync-required']},
+                'decision_id': decision_id,
+                'approved_by': 'project-owner',
+                'approved_at': '2026-09-27T10:00:00Z',
+                'expires_at': '2026-09-27T12:00:00Z',
+            }
+        },
+    )
+
+
+def _set_rule_time(monkeypatch, hour, minute=0):
+    monkeypatch.setattr(
+        validation_module,
+        '_utc_now',
+        lambda: validation_module.datetime(
+            2026, 9, 27, hour, minute, tzinfo=validation_module.timezone.utc
+        ),
+    )
+
+
 def test_successful_dry_run_creates_no_commit(tmp_path):
     root, path, _, head, _, pack_path, output, _ = _setup_verified(tmp_path)
 
@@ -123,6 +197,10 @@ def test_successful_dry_run_creates_no_commit(tmp_path):
     assert report['commit_requested'] is False
     assert report['commit_result'] == 'not_requested'
     assert report['push_requested'] is False
+    assert report['rule_evidence_fingerprint'] is None
+    assert 'Rule Evidence fingerprint: `none`' in (
+        output / 'finalization.md'
+    ).read_text(encoding='utf-8')
     assert report['semantic_meaning_verified_by_cli'] is False
     assert report['human_semantic_approval_required_before_commit'] is True
     assert report['selected_skills']
@@ -493,3 +571,160 @@ def test_message_requires_explicit_commit(tmp_path):
     root, _, _, _, _, pack_path, _, _ = _setup_verified(tmp_path)
     with pytest.raises(SyncCommitError, match='requires --commit'):
         finalize_sync(root, pack_path, message='not authorized')
+
+
+def test_matching_rule_evidence_is_rechecked_and_bound_to_finalization(
+    tmp_path,
+    monkeypatch,
+):
+    _set_rule_time(monkeypatch, 11)
+    root, _, _, _, _, pack_path, output, _ = _setup_verified(
+        tmp_path,
+        configure=_temporary_waiver_configuration,
+    )
+    verification = json.loads(
+        (output / 'verification.json').read_text(encoding='utf-8')
+    )
+
+    _, report = finalize_sync(root, pack_path)
+
+    expected = verification['rule_evidence_binding']['evidence']['evidence_fingerprint']
+    assert report['state'] == 'prepared'
+    assert report['rule_evidence_fingerprint'] == expected
+    assert _load_finalization(output)['rule_evidence_fingerprint'] == expected
+
+
+def test_temporary_waiver_expiry_after_verify_fails_before_staging(
+    tmp_path,
+    monkeypatch,
+):
+    _set_rule_time(monkeypatch, 11)
+    root, path, _, head, _, pack_path, _, _ = _setup_verified(
+        tmp_path,
+        configure=_temporary_waiver_configuration,
+    )
+    content_before = path.read_bytes()
+    index_before = _git(root, 'diff', '--cached', '--name-only')
+    _set_rule_time(monkeypatch, 13)
+
+    with pytest.raises(SyncFinalizeIntegrityError, match='sync verify again'):
+        finalize_sync(root, pack_path, commit=True)
+
+    assert _git(root, 'rev-parse', 'HEAD') == head
+    assert _git(root, 'diff', '--cached', '--name-only') == index_before == ''
+    assert path.read_bytes() == content_before
+
+
+def test_tampered_nested_rule_evidence_resealed_only_outside_is_rejected(
+    tmp_path,
+    monkeypatch,
+):
+    _set_rule_time(monkeypatch, 11)
+    root, _, _, _, _, pack_path, output, _ = _setup_verified(
+        tmp_path,
+        configure=_temporary_waiver_configuration,
+    )
+    verification_path = output / 'verification.json'
+    report = json.loads(verification_path.read_text(encoding='utf-8'))
+    report['rule_evidence_binding']['evidence']['results'][0]['details']['path'] = 'tampered'
+    sync_verification._seal_verification_report(report)
+    verification_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+    )
+
+    with pytest.raises(SyncFinalizeIntegrityError, match='Rule Evidence'):
+        finalize_sync(root, pack_path)
+
+
+def test_tampered_rule_binding_state_fingerprint_is_rejected(tmp_path):
+    root, _, _, _, _, pack_path, output, _ = _setup_verified(tmp_path)
+    verification_path = output / 'verification.json'
+    report = json.loads(verification_path.read_text(encoding='utf-8'))
+    report['rule_evidence_binding']['verified_working_tree_fingerprint'] = '0' * 64
+    sync_verification._seal_verification_report(report)
+    verification_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+    )
+
+    with pytest.raises(SyncFinalizeIntegrityError, match='working-tree fingerprint'):
+        finalize_sync(root, pack_path)
+
+
+def test_missing_stage6_rule_binding_requires_fresh_verification(tmp_path):
+    root, _, _, _, _, pack_path, output, _ = _setup_verified(tmp_path)
+    verification_path = output / 'verification.json'
+    report = json.loads(verification_path.read_text(encoding='utf-8'))
+    report.pop('rule_evidence_binding')
+    sync_verification._seal_verification_report(report)
+    verification_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+    )
+
+    with pytest.raises(SyncFinalizeIntegrityError, match='sync verify again'):
+        finalize_sync(root, pack_path)
+
+
+def test_committed_retry_does_not_reopen_expired_temporary_waiver(
+    tmp_path,
+    monkeypatch,
+):
+    _set_rule_time(monkeypatch, 11)
+    root, _, _, _, _, pack_path, _, _ = _setup_verified(
+        tmp_path,
+        configure=_temporary_waiver_configuration,
+    )
+    _, committed = finalize_sync(root, pack_path, commit=True)
+    _set_rule_time(monkeypatch, 13)
+
+    _, repeated = finalize_sync(root, pack_path, commit=True)
+
+    assert repeated['commit_result'] == 'already_committed'
+    assert repeated['commit_sha'] == committed['commit_sha']
+
+
+def test_previous_committed_finalization_must_match_rule_evidence_fingerprint(
+    tmp_path,
+    monkeypatch,
+):
+    from project_system import sync_finalization
+
+    _set_rule_time(monkeypatch, 11)
+    root, _, _, _, _, pack_path, output, _ = _setup_verified(
+        tmp_path,
+        configure=_temporary_waiver_configuration,
+    )
+    finalize_sync(root, pack_path, commit=True)
+    finalization_path = output / 'finalization.json'
+    report = json.loads(finalization_path.read_text(encoding='utf-8'))
+    report['rule_evidence_fingerprint'] = '0' * 64
+    sync_finalization._seal_finalization_report(report)
+    finalization_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+    )
+
+    with pytest.raises(
+        SyncFinalizeIntegrityError,
+        match='rule_evidence_fingerprint',
+    ):
+        finalize_sync(root, pack_path, commit=True)
+
+def test_push_retry_after_commit_does_not_reopen_expired_temporary_waiver(
+    tmp_path,
+    monkeypatch,
+):
+    _set_rule_time(monkeypatch, 11)
+    root, _, _, _, _, pack_path, _, remote = _setup_verified(
+        tmp_path,
+        with_remote=True,
+        configure=_temporary_waiver_configuration,
+    )
+
+    _, committed = finalize_sync(root, pack_path, commit=True)
+    _set_rule_time(monkeypatch, 13)
+
+    _, pushed = finalize_sync(root, pack_path, push=True)
+
+    assert pushed['commit_result'] == 'already_committed'
+    assert pushed['push_result'] == 'pushed'
+    assert pushed['commit_sha'] == committed['commit_sha']
+    assert _git(remote, 'rev-parse', 'HEAD') == committed['commit_sha']

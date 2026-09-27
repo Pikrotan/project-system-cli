@@ -12,6 +12,7 @@ from .generation import GenerationBlockedError, generate
 from .graph import extract_refs
 from .object_loader import load_object_layer
 from .skills import SkillError, project_is_skills_era, verify_skill_evidence
+from .rule_evidence import rule_evidence_to_dict
 from .sync_planning import (
     PACK_ID_RE,
     PACK_SUFFIXES,
@@ -25,7 +26,7 @@ from .sync_planning import (
     artifact_payload_sha256,
 )
 from .utils import load_yaml
-from .validation import counts, validate
+from .validation import counts, validate, validate_report
 
 
 INTEGRITY_EXIT = 3
@@ -831,6 +832,30 @@ def _markdown_report(report):
         else:
             rendered = ', '.join(f'{key}={value}' for key, value in summary['counts'].items())
             lines.append(f'- {stage}: {rendered}')
+    binding = report.get('rule_evidence_binding')
+    if binding is not None:
+        evidence = binding['evidence']
+        lines.extend([
+            '',
+            '## Rules',
+            '',
+            f"- Checkpoint: `{binding['checkpoint']}`",
+            '- Working-tree fingerprint binding: '
+            f"`{binding['verified_working_tree_fingerprint']}`",
+            '- Rule Evidence fingerprint: '
+            f"`{evidence['evidence_fingerprint'] if evidence else 'none'}`",
+        ])
+        if evidence:
+            applied = evidence['applied_exception_ids']
+            lines.append(
+                '- Applied exceptions: '
+                + (', '.join(f'`{item}`' for item in applied) if applied else 'none')
+            )
+            for item in evidence['results']:
+                lines.append(
+                    f"- `{item['rule_id']}`: raw `{item['raw_status']}`, "
+                    f"effective `{item['effective_status']}`"
+                )
     lines.extend(['', '## Warnings / Errors', ''])
     lines.extend(f'- Warning: {message}' for message in report['warnings'])
     lines.extend(f'- Error: {message}' for message in report['errors'])
@@ -952,6 +977,20 @@ def verified_working_tree_state(root, plan, scope):
     return payload, sha256(canonical).hexdigest()
 
 
+def build_rule_evidence_binding(validation_report, verification_fingerprint):
+    """Bind common Rule Evidence to one exact verified working-tree state."""
+    evidence = validation_report.rule_evidence
+    if evidence is not None and evidence.checkpoint != 'sync_verify':
+        raise SyncIntegrityError(
+            'SYNC Rule Evidence must use the sync_verify checkpoint'
+        )
+    return {
+        'checkpoint': 'sync_verify',
+        'verified_working_tree_fingerprint': verification_fingerprint,
+        'evidence': rule_evidence_to_dict(evidence) if evidence is not None else None,
+    }
+
+
 def _write_reports(output, report):
     try:
         _seal_verification_report(report)
@@ -1045,7 +1084,12 @@ def verify_sync(root, selector):
         _write_reports(integrity['output'], report)
         raise SyncScopeError('generation changed non-generated project files')
 
-    second_issues = validate(root)
+    second_report = validate_report(
+        root,
+        rule_checkpoint='sync_verify',
+        rule_base_commit=plan['base_commit'],
+    )
+    second_issues = list(second_report.issues)
     report['validation']['after_generation'] = _validation_summary(second_issues)
     changes_after = collect_git_changes(root, plan['base_commit'])
     scope_after = _scope_analysis(
@@ -1080,13 +1124,6 @@ def verify_sync(root, selector):
         )
         _write_reports(integrity['output'], report)
         raise SyncScopeError('scope violation after generation')
-    if _fatal_validation(second_issues):
-        report['verification_result'] = 'failed_validation'
-        report['errors'].append('post-generation validation contains BLOCKING/ERROR issues')
-        _write_reports(integrity['output'], report)
-        raise SyncValidationError('post-generation validation failed')
-
-    report['verification_result'] = 'passed'
     report.update(scope_after)
     report['git_changes'] = _reportable_git_changes(
         changes_after,
@@ -1106,5 +1143,16 @@ def verify_sync(root, selector):
     )
     report['verified_working_tree_state'] = verified_state
     report['verification_fingerprint'] = verification_fingerprint
+    report['rule_evidence_binding'] = build_rule_evidence_binding(
+        second_report,
+        verification_fingerprint,
+    )
+    if _fatal_validation(second_issues):
+        report['verification_result'] = 'failed_validation'
+        report['errors'].append('post-generation validation contains BLOCKING/ERROR issues')
+        _write_reports(integrity['output'], report)
+        raise SyncValidationError('post-generation validation failed')
+
+    report['verification_result'] = 'passed'
     _write_reports(integrity['output'], report)
     return integrity['output'], report

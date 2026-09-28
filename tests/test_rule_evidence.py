@@ -10,6 +10,7 @@ from project_system.rule_exceptions import (
 )
 from project_system.rule_evidence import (
     RuleEvidenceError,
+    _context_payload,
     build_rule_evidence,
     canonical_sha256,
     rule_evidence_json,
@@ -71,12 +72,20 @@ def exception_registry(exceptions=None):
     }
 
 
-def context(root, *, checkpoint="project_validate", objects=None, complete=True):
+def context(
+    root,
+    *,
+    checkpoint="project_validate",
+    objects=None,
+    complete=True,
+    evaluation_paths=None,
+):
     return RuleEvaluationContext(
         project_root=Path(root),
         checkpoint=checkpoint,
         objects={} if objects is None else objects,
         object_layer_complete=complete,
+        evaluation_paths=evaluation_paths,
     )
 
 
@@ -247,6 +256,77 @@ def test_context_fingerprint_is_semantic_and_excludes_project_root(tmp_path):
     first = build(tmp_path / "checkout-a", ctx=context(tmp_path / "checkout-a", objects=objects))
     second = build(tmp_path / "checkout-b", ctx=context(tmp_path / "checkout-b", objects=objects))
     assert first.evaluation_context_sha256 == second.evaluation_context_sha256
+
+
+def test_bounded_evaluation_paths_change_context_and_evidence_fingerprints(tmp_path):
+    first = build(
+        tmp_path,
+        ctx=context(tmp_path, evaluation_paths=("docs/a.md",)),
+    )
+    second = build(
+        tmp_path,
+        ctx=context(tmp_path, evaluation_paths=("docs/b.md",)),
+    )
+    assert first.evaluation_context_sha256 != second.evaluation_context_sha256
+    assert first.evidence_fingerprint != second.evidence_fingerprint
+
+
+def test_equivalent_evaluation_path_sets_have_identical_evidence(tmp_path):
+    first = build(
+        tmp_path,
+        ctx=context(
+            tmp_path,
+            evaluation_paths=("docs/b.md", "docs/a.md", "docs/b.md"),
+        ),
+    )
+    second = build(
+        tmp_path,
+        ctx=context(
+            tmp_path,
+            evaluation_paths=("docs/a.md", "docs/b.md"),
+        ),
+    )
+    assert first.evaluation_context_sha256 == second.evaluation_context_sha256
+    assert first.evidence_fingerprint == second.evidence_fingerprint
+
+
+def test_project_wide_and_empty_bounded_contexts_are_distinct(tmp_path):
+    project_wide = build(tmp_path, ctx=context(tmp_path))
+    empty_bounded = build(
+        tmp_path,
+        ctx=context(tmp_path, evaluation_paths=()),
+    )
+    assert project_wide.evaluation_context_sha256 != empty_bounded.evaluation_context_sha256
+    assert project_wide.evidence_fingerprint != empty_bounded.evidence_fingerprint
+
+
+def test_context_payload_serializes_project_wide_and_bounded_paths_exactly(tmp_path):
+    assert _context_payload(context(tmp_path))["evaluation_paths"] is None
+    assert _context_payload(
+        context(
+            tmp_path,
+            evaluation_paths=("docs/b.md", "docs/a.md", "docs/b.md"),
+        )
+    )["evaluation_paths"] == ["docs/a.md", "docs/b.md"]
+
+
+def test_bounded_context_remains_checkout_location_independent(tmp_path):
+    first = build(
+        tmp_path / "checkout-a",
+        ctx=context(
+            tmp_path / "checkout-a",
+            evaluation_paths=("docs/a.md",),
+        ),
+    )
+    second = build(
+        tmp_path / "checkout-b",
+        ctx=context(
+            tmp_path / "checkout-b",
+            evaluation_paths=("docs/a.md",),
+        ),
+    )
+    assert first.evaluation_context_sha256 == second.evaluation_context_sha256
+    assert first.evidence_fingerprint == second.evidence_fingerprint
 
 
 @pytest.mark.parametrize("changed", ["checkpoint", "objects", "complete"])
@@ -831,4 +911,194 @@ def test_evidence_rejects_resolution_with_revoked_exception(tmp_path):
             exception_resolution=RuleExceptionResolution(
                 (RuleExceptionApplication("REPO-001", exception_id),)
             ),
+        )
+
+
+def test_evidence_accepts_genuine_scope_non_intersection(tmp_path):
+    scoped_registry = rules_registry(
+        {
+            "REPO-001": rule(scope=["docs/**"]),
+        }
+    )
+    scoped_context = context(
+        tmp_path,
+        evaluation_paths=("src/main.py",),
+    )
+    raw = result(
+        scope=("docs/**",),
+        status="NOT_APPLICABLE",
+        details={"reason": "scope_no_intersection"},
+    )
+
+    evidence = build(
+        tmp_path,
+        registry=scoped_registry,
+        ctx=scoped_context,
+        results=[raw],
+    )
+
+    assert evidence.results[0].raw_status == "NOT_APPLICABLE"
+    assert evidence.results[0].details == {
+        "reason": "scope_no_intersection",
+    }
+
+
+def test_evidence_rejects_pass_when_scope_does_not_intersect(tmp_path):
+    scoped_registry = rules_registry(
+        {
+            "REPO-001": rule(scope=["docs/**"]),
+        }
+    )
+    scoped_context = context(
+        tmp_path,
+        evaluation_paths=("src/main.py",),
+    )
+    forged = result(
+        scope=("docs/**",),
+        status="PASS",
+    )
+
+    with pytest.raises(RuleEvidenceError, match="scope"):
+        build(
+            tmp_path,
+            registry=scoped_registry,
+            ctx=scoped_context,
+            results=[forged],
+        )
+
+
+def test_evidence_rejects_forged_scope_non_intersection_when_scope_matches(tmp_path):
+    scoped_registry = rules_registry(
+        {
+            "REPO-001": rule(scope=["docs/**"]),
+        }
+    )
+    scoped_context = context(
+        tmp_path,
+        evaluation_paths=("docs/a.md",),
+    )
+    forged = result(
+        scope=("docs/**",),
+        status="NOT_APPLICABLE",
+        details={"reason": "scope_no_intersection"},
+    )
+
+    with pytest.raises(RuleEvidenceError, match="scope"):
+        build(
+            tmp_path,
+            registry=scoped_registry,
+            ctx=scoped_context,
+            results=[forged],
+        )
+
+
+def test_evidence_rejects_scope_non_intersection_for_unscoped_rule(tmp_path):
+    forged = result(
+        status="NOT_APPLICABLE",
+        details={"reason": "scope_no_intersection"},
+    )
+
+    with pytest.raises(RuleEvidenceError, match="scope"):
+        build(
+            tmp_path,
+            ctx=context(
+                tmp_path,
+                evaluation_paths=("docs/a.md",),
+            ),
+            results=[forged],
+        )
+
+
+@pytest.mark.parametrize("method", ["ai", "human"])
+def test_evidence_accepts_scope_non_intersection_before_nondeterministic_pending(
+    tmp_path,
+    method,
+):
+    scoped_registry = rules_registry(
+        {
+            "PROC-001": rule(
+                method=method,
+                scope=["docs/**"],
+            ),
+        }
+    )
+    scoped_context = context(
+        tmp_path,
+        evaluation_paths=("src/main.py",),
+    )
+    raw = result(
+        rule_id="PROC-001",
+        method=method,
+        scope=("docs/**",),
+        status="NOT_APPLICABLE",
+        details={"reason": "scope_no_intersection"},
+    )
+
+    evidence = build(
+        tmp_path,
+        registry=scoped_registry,
+        ctx=scoped_context,
+        results=[raw],
+    )
+
+    assert evidence.results[0].raw_status == "NOT_APPLICABLE"
+
+
+@pytest.mark.parametrize("method", ["ai", "human"])
+def test_evidence_rejects_pending_when_nondeterministic_scope_does_not_intersect(
+    tmp_path,
+    method,
+):
+    scoped_registry = rules_registry(
+        {
+            "PROC-001": rule(
+                method=method,
+                scope=["docs/**"],
+            ),
+        }
+    )
+    scoped_context = context(
+        tmp_path,
+        evaluation_paths=("src/main.py",),
+    )
+    forged = result(
+        rule_id="PROC-001",
+        method=method,
+        scope=("docs/**",),
+        status="PENDING",
+        details={"reason": f"{method}_verification_required"},
+    )
+
+    with pytest.raises(RuleEvidenceError, match="scope"):
+        build(
+            tmp_path,
+            registry=scoped_registry,
+            ctx=scoped_context,
+            results=[forged],
+        )
+
+
+def test_evidence_rejects_failure_reason_for_scope_non_intersection(tmp_path):
+    scoped_registry = rules_registry(
+        {
+            "REPO-001": rule(scope=["docs/**"]),
+        }
+    )
+    scoped_context = context(
+        tmp_path,
+        evaluation_paths=("src/main.py",),
+    )
+    forged = result(
+        scope=("docs/**",),
+        status="NOT_APPLICABLE",
+        details={"reason": "scope_no_intersection"},
+        failure_reason="forged failure",
+    )
+
+    with pytest.raises(RuleEvidenceError, match="scope"):
+        build(
+            tmp_path,
+            registry=scoped_registry,
+            ctx=scoped_context,
+            results=[forged],
         )

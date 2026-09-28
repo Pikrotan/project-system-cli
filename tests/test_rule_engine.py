@@ -46,11 +46,17 @@ def registry(**rules):
     }
 
 
-def context(root, checkpoint="project_validate", objects=None):
+def context(
+    root,
+    checkpoint="project_validate",
+    objects=None,
+    evaluation_paths=None,
+):
     return RuleEvaluationContext(
         project_root=Path(root),
         checkpoint=checkpoint,
         objects={} if objects is None else objects,
+        evaluation_paths=evaluation_paths,
     )
 
 
@@ -142,7 +148,7 @@ def test_checkpoint_mismatch_precedes_unknown_checker_runtime_fallback(tmp_path)
     assert result.details["reason"] == "checkpoint_not_configured"
 
 
-def test_severity_and_scope_are_carried_without_task_interpretation(tmp_path):
+def test_project_wide_context_preserves_scoped_rule_execution(tmp_path):
     (tmp_path / "README.md").write_text("project\n", encoding="utf-8")
     scope = ["src/**", "docs/*.md"]
     result = evaluate_rules(
@@ -156,6 +162,150 @@ def test_severity_and_scope_are_carried_without_task_interpretation(tmp_path):
     assert result.severity == "WARNING"
     assert result.resolved_scope == tuple(scope)
     assert result.raw_status == "PASS"
+
+
+def test_bounded_exact_scope_intersection_executes_rule(tmp_path):
+    (tmp_path / "README.md").write_text("project\n", encoding="utf-8")
+    result = evaluate_rules(
+        registry(**{"REPO-001": rule(scope=["docs/README.md"])}),
+        context(tmp_path, evaluation_paths=("docs/README.md",)),
+    )[0]
+    assert result.raw_status == "PASS"
+    assert result.resolved_scope == ("docs/README.md",)
+
+
+def test_bounded_scope_without_intersection_is_not_applicable(tmp_path):
+    result = evaluate_rules(
+        registry(**{"REPO-001": rule(scope=["docs/**"])}),
+        context(tmp_path, evaluation_paths=("src/main.py",)),
+    )[0]
+    assert result.raw_status == "NOT_APPLICABLE"
+    assert result.details == {"reason": "scope_no_intersection"}
+
+
+def test_scope_non_intersection_does_not_invoke_checker(tmp_path, monkeypatch):
+    import project_system.rule_checkers as checker_module
+
+    monkeypatch.setattr(
+        checker_module,
+        "evaluate_checker",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("scope-non-applicable rule reached checker")
+        ),
+    )
+    result = evaluate_rules(
+        registry(**{"REPO-001": rule(scope=["docs/**"])}),
+        context(tmp_path, evaluation_paths=("src/main.py",)),
+    )[0]
+    assert result.raw_status == "NOT_APPLICABLE"
+
+
+def test_empty_bounded_scope_skips_scoped_rule(tmp_path):
+    result = evaluate_rules(
+        registry(**{"REPO-001": rule(scope=["docs/**"])}),
+        context(tmp_path, evaluation_paths=()),
+    )[0]
+    assert result.raw_status == "NOT_APPLICABLE"
+    assert result.details["reason"] == "scope_no_intersection"
+
+
+def test_empty_bounded_scope_still_executes_unscoped_rule(tmp_path):
+    (tmp_path / "README.md").write_text("project\n", encoding="utf-8")
+    result = evaluate_rules(
+        registry(**{"REPO-001": rule()}),
+        context(tmp_path, evaluation_paths=()),
+    )[0]
+    assert result.raw_status == "PASS"
+
+
+def test_checkpoint_mismatch_precedes_scope_mismatch(tmp_path):
+    result = evaluate_rules(
+        registry(**{
+            "REPO-001": rule(
+                checkpoints=["sync_verify"],
+                scope=["docs/**"],
+            )
+        }),
+        context(
+            tmp_path,
+            checkpoint="project_validate",
+            evaluation_paths=("src/main.py",),
+        ),
+    )[0]
+    assert result.raw_status == "NOT_APPLICABLE"
+    assert result.details == {"reason": "checkpoint_not_configured"}
+
+
+@pytest.mark.parametrize(
+    ("pattern", "path", "matches"),
+    [
+        ("docs/*.md", "docs/a.md", True),
+        ("docs/*.md", "docs/nested/a.md", False),
+        ("docs/file?.md", "docs/file1.md", True),
+        ("docs/file[ab].md", "docs/filea.md", True),
+        ("docs/file[ab].md", "docs/filec.md", False),
+        ("docs/**/*.md", "docs/a.md", True),
+        ("docs/**/*.md", "docs/nested/a.md", True),
+        ("src/**/test?.dart", "src/test1.dart", True),
+        ("src/**/test?.dart", "src/a/b/test2.dart", True),
+    ],
+)
+def test_bounded_scope_uses_approved_segment_glob_semantics(
+    tmp_path,
+    pattern,
+    path,
+    matches,
+):
+    (tmp_path / "README.md").write_text("project\n", encoding="utf-8")
+    result = evaluate_rules(
+        registry(**{"REPO-001": rule(scope=[pattern])}),
+        context(tmp_path, evaluation_paths=(path,)),
+    )[0]
+    assert (result.raw_status == "PASS") is matches
+    if not matches:
+        assert result.details["reason"] == "scope_no_intersection"
+
+
+@pytest.mark.parametrize(
+    "evaluation_paths",
+    [
+        "docs/a.md",
+        (1,),
+        ("",),
+        (" docs/a.md",),
+        ("docs\\a.md",),
+        ("C:/docs/a.md",),
+        ("docs/a\x00.md",),
+        ("/docs/a.md",),
+        ("./docs/a.md",),
+        ("docs/../a.md",),
+        ("docs/*.md",),
+        (".git/config",),
+        (".GIT/config",),
+        ("docs//a.md",),
+    ],
+)
+def test_malformed_concrete_evaluation_paths_fail_closed(
+    tmp_path,
+    evaluation_paths,
+):
+    with pytest.raises((TypeError, ValueError), match="evaluation_paths"):
+        context(tmp_path, evaluation_paths=evaluation_paths)
+
+
+def test_evaluation_paths_use_canonical_set_semantics(tmp_path):
+    first = context(
+        tmp_path,
+        evaluation_paths=("docs/b.md", "docs/a.md", "docs/b.md"),
+    )
+    second = context(
+        tmp_path,
+        evaluation_paths=("docs/a.md", "docs/b.md"),
+    )
+    assert first.evaluation_paths == ("docs/a.md", "docs/b.md")
+    assert first == second
+    assert first.evaluation_paths is not None
+    assert context(tmp_path).evaluation_paths is None
 
 
 def test_object_layer_completeness_defaults_fail_closed(tmp_path):

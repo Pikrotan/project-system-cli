@@ -260,6 +260,44 @@ The context is intentionally extensible so Task Specification and Risk Engine su
 
 Rule applicability and resolved scope are derived from this explicit context.
 
+### Project-wide and bounded path evaluation
+
+Stage 7 adds `evaluation_paths` to the Evaluation Context without introducing a
+Task Specification. Its values are:
+
+```text
+null / None   project-wide, unbounded evaluation
+[] / ()       bounded evaluation with no affected canonical paths
+[paths...]    bounded evaluation over that exact canonical path set
+```
+
+Concrete evaluation paths are canonical repository-relative POSIX paths. They
+are deduplicated and sorted before evaluation and evidence hashing. Absolute
+paths, traversal, `.git/**`, backslashes, drive syntax, NUL, glob syntax, and
+noncanonical path forms fail closed. `None` and an empty bounded set are
+semantically distinct.
+
+Checkpoint applicability is evaluated before path scope. A configured Rule
+without `scope` remains applicable in any bounded context. A Rule with
+`scope.paths` remains applicable in project-wide context; in bounded context it
+is applicable only when at least one evaluation path matches at least one scope
+pattern. Otherwise it produces `NOT_APPLICABLE` with reason
+`scope_no_intersection`, and its checker is not invoked.
+
+Rule scope and governed exception scope share one repository-root-anchored glob
+matcher. `*`, `?`, and character classes match within one path segment. A
+segment that is exactly `**` matches zero or more complete segments, and the
+whole path must be consumed. Thus `docs/*.md` excludes nested files while
+`docs/**/*.md` includes both direct and nested Markdown files.
+
+`resolved_scope` continues to contain the declared Rule scope patterns, not the
+matched concrete paths. The canonical bounded path set is bound through the
+Evaluation Context and `evaluation_context_sha256`, so it also changes the
+common Rule Evidence fingerprint.
+
+Stage 7 does not introduce Task Specifications, task lifecycle or IDs, Task
+Obligations, risk classification, or a Risk Engine. Those remain future stages.
+
 ## Checkpoints
 
 Rules v1 reserves these checkpoint identities:
@@ -442,9 +480,9 @@ These remain noncanonical and disposable.
 
 Existing SYNC already provides integrity, scope, Skill evidence, validation evidence, and exact-state fingerprints.
 
-`sync verify` evaluates the Rule Engine at the `sync_verify` checkpoint during its second validation pass. Its successful report binds the common Rule Evidence payload, including registry and rule hashes, exception identity, raw and effective results, and the Evidence fingerprint, to the exact verified working-tree fingerprint. The same binding is retained in a scope-safe failed validation report so the failure remains auditable.
+`sync verify` evaluates the Rule Engine at the `sync_verify` checkpoint during its second validation pass. This evaluation is bounded by the exact final scope-safe `actual_changed_canonical_paths`; an empty canonical change set is an empty bounded evaluation. Its successful report binds the common Rule Evidence payload, including registry and rule hashes, exception identity, raw and effective results, bounded Evaluation Context, and the Evidence fingerprint, to the exact verified working-tree fingerprint. The same binding is retained in a scope-safe failed validation report so the failure remains auditable.
 
-Finalization validates the stored binding and re-evaluates `sync_verify` Rules against the same base commit before dry-run preparation, first commit, first commit-and-push, or reviewed-no-change completion. Any Rule Evidence drift, including an expired or revoked exception, makes verification stale and requires `project sync verify` again. A retry of an already recorded commit or push does not re-evaluate current Rules because the committed canonical bytes are already fixed.
+Finalization validates the stored binding and re-evaluates `sync_verify` Rules against the same base commit and persisted verified canonical path set before dry-run preparation, first commit, first commit-and-push, or reviewed-no-change completion. Any Rule Evidence drift, including an expired or revoked exception, makes verification stale and requires `project sync verify` again. A retry of an already recorded commit or push does not re-evaluate current Rules because the committed canonical bytes are already fixed.
 
 Completed terminal bindings may carry the Rule Evidence fingerprint. New pushed and reviewed-no-change outcomes emit it; rejected and abandoned outcomes use `null`. The field remains optional so terminal records created before this binding existed remain schema-valid.
 

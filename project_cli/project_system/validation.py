@@ -138,6 +138,7 @@ def validate_report(
     rule_checkpoint='project_validate',
     rule_base_commit=None,
     rule_as_of=None,
+    rule_evaluation_paths=None,
 ):
     if rule_checkpoint not in SUPPORTED_CHECKPOINTS:
         raise ValueError(f'unsupported rule checkpoint: {rule_checkpoint!r}')
@@ -202,6 +203,7 @@ def validate_report(
                 project_root=Path(root),checkpoint=rule_checkpoint,
                 objects=layer.objects,
                 object_layer_complete=_object_layer_is_complete(layer),
+                evaluation_paths=rule_evaluation_paths,
             )
             results=evaluate_rules(rule_layer.rules_registry,context)
             try:

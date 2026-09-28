@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from . import rule_checkers
+from .rule_scope import canonicalize_evaluation_paths, scope_pattern_matches
 
 
 SUPPORTED_CHECKPOINTS = frozenset(
@@ -21,9 +22,15 @@ class RuleEvaluationContext:
     checkpoint: str
     objects: Mapping[str, object]
     object_layer_complete: bool = False
+    evaluation_paths: tuple[str, ...] | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "project_root", Path(self.project_root))
+        object.__setattr__(
+            self,
+            "evaluation_paths",
+            canonicalize_evaluation_paths(self.evaluation_paths),
+        )
 
 
 @dataclass(frozen=True)
@@ -73,9 +80,9 @@ def evaluate_rules(rules_registry, context):
     """Evaluate active rules in stable Rule-ID order.
 
     Draft and deprecated definitions are omitted rather than reported as PASS.
-    Stage 2A copies ``scope.paths`` into ``resolved_scope`` (an empty tuple means
-    project-wide) but intentionally does not interpret scope as task-aware
-    applicability. Checker-specific targets come only from validated parameters.
+    ``resolved_scope`` preserves declared ``scope.paths``.  A bounded Evaluation
+    Context makes a scoped Rule applicable only when at least one concrete
+    evaluation path intersects at least one declared pattern.
     """
     if context.checkpoint not in SUPPORTED_CHECKPOINTS:
         raise ValueError(f"unsupported rule checkpoint: {context.checkpoint!r}")
@@ -112,6 +119,30 @@ def evaluate_rules(rules_registry, context):
                     scope=scope,
                     status="NOT_APPLICABLE",
                     details={"reason": "checkpoint_not_configured"},
+                )
+            )
+            continue
+
+        if (
+            scope
+            and context.evaluation_paths is not None
+            and not any(
+                scope_pattern_matches(pattern, path)
+                for pattern in scope
+                for path in context.evaluation_paths
+            )
+        ):
+            results.append(
+                _result(
+                    rule_id=rule_id,
+                    method=method,
+                    checker=checker,
+                    checker_version=checker_version,
+                    severity=severity,
+                    context=context,
+                    scope=scope,
+                    status="NOT_APPLICABLE",
+                    details={"reason": "scope_no_intersection"},
                 )
             )
             continue

@@ -292,6 +292,9 @@ def _recheck_rule_evidence(root, integrity, verification):
         root,
         rule_checkpoint='sync_verify',
         rule_base_commit=integrity['plan']['base_commit'],
+        rule_evaluation_paths=tuple(
+            verification['actual_changed_canonical_paths']
+        ),
     )
     if any(level in {'BLOCKING', 'ERROR'} for level, _, _ in current.issues):
         raise SyncFinalizeIntegrityError(

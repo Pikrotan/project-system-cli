@@ -117,11 +117,12 @@ def _sync_rule(
     path='README.md',
     severity='BLOCKING',
     exception_policy='forbidden',
+    scope=None,
 ):
     verification = {'method': method}
     if method == 'deterministic':
         verification.update(checker=checker, parameters={'path': path})
-    return {
+    value = {
         'title': 'SYNC verification rule',
         'status': 'active',
         'category': 'repository',
@@ -133,6 +134,9 @@ def _sync_rule(
         },
         'exception_policy': exception_policy,
     }
+    if scope is not None:
+        value['scope'] = {'paths': list(scope)}
+    return value
 
 
 def _write_rule_layer(root, rules, exceptions=None):
@@ -618,10 +622,82 @@ def test_sync_verify_persists_common_pass_evidence_bound_to_exact_state(tmp_path
     assert 'rules_registry_sha256' not in report
 
 
-def test_sync_only_blocking_fail_persists_evidence_and_uses_validation_exit(tmp_path):
+def test_sync_verify_scoped_rule_outside_actual_changes_is_not_applicable(
+    tmp_path,
+    monkeypatch,
+):
+    from project_system import rule_checkers
+
     def configure(root, path, object_id):
         _write_rule_layer(
-            root, {'REPO-001': _sync_rule(path='missing-sync-required')},
+            root,
+            {'REPO-001': _sync_rule(scope=['docs/**'])},
+        )
+
+    root, path, _, _, _, pack_path, _, _ = _setup_update_plan(
+        tmp_path,
+        configure=configure,
+    )
+    _append_body(path)
+    monkeypatch.setattr(
+        rule_checkers,
+        'evaluate_checker',
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError('non-intersecting scoped rule reached checker')
+        ),
+    )
+
+    _, report = verify_sync(root, pack_path)
+
+    result = report['rule_evidence_binding']['evidence']['results'][0]
+    assert result['raw_status'] == 'NOT_APPLICABLE'
+    assert result['details'] == {'reason': 'scope_no_intersection'}
+
+
+def test_sync_verify_binds_exact_changed_paths_into_rule_context(
+    tmp_path,
+    monkeypatch,
+):
+    captured = []
+
+    def configure(root, path, object_id):
+        relative = path.relative_to(root).as_posix()
+        _write_rule_layer(
+            root,
+            {'REPO-001': _sync_rule(scope=[relative])},
+        )
+
+    root, path, _, _, _, pack_path, _, _ = _setup_update_plan(
+        tmp_path,
+        configure=configure,
+    )
+    _append_body(path)
+    actual_evaluate = validation_module.evaluate_rules
+
+    def capture_context(registry, evaluation_context):
+        captured.append(evaluation_context)
+        return actual_evaluate(registry, evaluation_context)
+
+    monkeypatch.setattr(validation_module, 'evaluate_rules', capture_context)
+    _, report = verify_sync(root, pack_path)
+
+    relative = path.relative_to(root).as_posix()
+    assert captured[-1].checkpoint == 'sync_verify'
+    assert captured[-1].evaluation_paths == (relative,)
+    result = report['rule_evidence_binding']['evidence']['results'][0]
+    assert result['raw_status'] == result['effective_status'] == 'PASS'
+    assert result['resolved_scope'] == [relative]
+
+
+def test_sync_only_blocking_fail_persists_evidence_and_uses_validation_exit(tmp_path):
+    def configure(root, path, object_id):
+        relative = path.relative_to(root).as_posix()
+        _write_rule_layer(
+            root,
+            {'REPO-001': _sync_rule(
+                path='missing-sync-required',
+                scope=[relative],
+            )},
         )
 
     root, path, _, _, _, pack_path, output, _ = _setup_update_plan(
@@ -787,7 +863,12 @@ def test_sync_error_cannot_be_waived(tmp_path, monkeypatch):
 
 def test_repeated_sync_verify_with_rule_evidence_is_byte_identical(tmp_path):
     def configure(root, path, object_id):
-        _write_rule_layer(root, {'REPO-001': _sync_rule()})
+        _write_rule_layer(
+            root,
+            {'REPO-001': _sync_rule(
+                scope=[path.relative_to(root).as_posix()],
+            )},
+        )
 
     root, path, _, _, _, pack_path, output, _ = _setup_update_plan(
         tmp_path,

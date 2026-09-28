@@ -1084,13 +1084,6 @@ def verify_sync(root, selector):
         _write_reports(integrity['output'], report)
         raise SyncScopeError('generation changed non-generated project files')
 
-    second_report = validate_report(
-        root,
-        rule_checkpoint='sync_verify',
-        rule_base_commit=plan['base_commit'],
-    )
-    second_issues = list(second_report.issues)
-    report['validation']['after_generation'] = _validation_summary(second_issues)
     changes_after = collect_git_changes(root, plan['base_commit'])
     scope_after = _scope_analysis(
         root,
@@ -1124,6 +1117,16 @@ def verify_sync(root, selector):
         )
         _write_reports(integrity['output'], report)
         raise SyncScopeError('scope violation after generation')
+    second_report = validate_report(
+        root,
+        rule_checkpoint='sync_verify',
+        rule_base_commit=plan['base_commit'],
+        rule_evaluation_paths=tuple(
+            scope_after['actual_changed_canonical_paths']
+        ),
+    )
+    second_issues = list(second_report.issues)
+    report['validation']['after_generation'] = _validation_summary(second_issues)
     report.update(scope_after)
     report['git_changes'] = _reportable_git_changes(
         changes_after,

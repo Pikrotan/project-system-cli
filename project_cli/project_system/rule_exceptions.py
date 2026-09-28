@@ -7,12 +7,15 @@ explicit clock value.  It performs no I/O and never changes raw results.
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from fnmatch import fnmatchcase
-from functools import lru_cache
-from pathlib import Path, PurePath, PurePosixPath
+from pathlib import Path, PurePath
 import re
 
 from .rule_engine import RuleEvaluationContext, RuleEvaluationResult
+from .rule_scope import (
+    RuleScopeError,
+    canonical_rule_path,
+    scope_pattern_matches as _shared_scope_pattern_matches,
+)
 
 
 _RFC3339_DATETIME_RE = re.compile(
@@ -68,57 +71,22 @@ def _parse_datetime(value, label):
 
 
 def _canonical_path(value, label, *, pattern):
-    if (
-        not isinstance(value, str)
-        or not value
-        or value != value.strip()
-        or "\\" in value
-        or ":" in value
-        or "\x00" in value
-    ):
-        raise RuleExceptionResolutionError(
-            f"{label} must be a canonical repository-relative POSIX path"
-        )
-    if not pattern and any(character in value for character in "*?[]"):
-        raise RuleExceptionResolutionError(f"{label} must not contain glob syntax")
-    pure = PurePosixPath(value)
-    if (
-        pure.is_absolute()
-        or not pure.parts
-        or any(part in {"", ".", ".."} for part in pure.parts)
-        or pure.parts[0].casefold() == ".git"
-        or pure.as_posix() != value
-    ):
-        raise RuleExceptionResolutionError(
-            f"{label} must be a canonical repository-relative POSIX path"
-        )
-    return value
+    try:
+        return canonical_rule_path(value, label, pattern=pattern)
+    except RuleScopeError as exc:
+        raise RuleExceptionResolutionError(str(exc)) from exc
 
 
 def scope_pattern_matches(pattern, path):
     """Match one anchored repository path with segment-aware v1 glob syntax."""
-    pattern = _canonical_path(pattern, "scope pattern", pattern=True)
-    path = _canonical_path(path, "violation path", pattern=False)
-    pattern_parts = PurePosixPath(pattern).parts
-    path_parts = PurePosixPath(path).parts
-
-    @lru_cache(maxsize=None)
-    def matches(pattern_index, path_index):
-        if pattern_index == len(pattern_parts):
-            return path_index == len(path_parts)
-        selected = pattern_parts[pattern_index]
-        if selected == "**":
-            return matches(pattern_index + 1, path_index) or (
-                path_index < len(path_parts)
-                and matches(pattern_index, path_index + 1)
-            )
-        return (
-            path_index < len(path_parts)
-            and fnmatchcase(path_parts[path_index], selected)
-            and matches(pattern_index + 1, path_index + 1)
+    try:
+        return _shared_scope_pattern_matches(
+            pattern,
+            path,
+            path_label="violation path",
         )
-
-    return matches(0, 0)
+    except RuleScopeError as exc:
+        raise RuleExceptionResolutionError(str(exc)) from exc
 
 
 def _object_path(context, object_id, record):

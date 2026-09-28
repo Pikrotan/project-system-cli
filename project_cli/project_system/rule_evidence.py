@@ -20,6 +20,7 @@ from .rule_engine import (
     RuleEvaluationResult,
     SUPPORTED_CHECKPOINTS,
 )
+from .rule_scope import RuleScopeError, scope_pattern_matches
 from .rule_exceptions import (
     RuleExceptionApplication,
     RuleExceptionResolution,
@@ -225,6 +226,7 @@ def _context_payload(context):
             "checkpoint": context.checkpoint,
             "object_layer_complete": context.object_layer_complete,
             "objects": context.objects,
+            "evaluation_paths": context.evaluation_paths,
         },
         project_root=context.project_root,
         location="evaluation_context",
@@ -333,10 +335,32 @@ def _result_evidence(raw_result, rules, context):
     if raw_result.raw_status not in RAW_STATUSES:
         raise RuleEvidenceError(f"result raw_status is invalid for {rule_id}")
 
+    scope_non_applicable = False
+    if (
+        context.checkpoint in checkpoints
+        and scope
+        and context.evaluation_paths is not None
+    ):
+        try:
+            scope_non_applicable = not any(
+                scope_pattern_matches(pattern, path)
+                for pattern in scope
+                for path in context.evaluation_paths
+            )
+        except RuleScopeError as exc:
+            raise RuleEvidenceError(
+                f"cannot validate result scope for {rule_id}: {exc}"
+            ) from exc
+
     if context.checkpoint not in checkpoints:
         if raw_result.raw_status != "NOT_APPLICABLE":
             raise RuleEvidenceError(
                 f"result raw_status mismatch for non-applicable checkpoint on {rule_id}"
+            )
+    elif scope_non_applicable:
+        if raw_result.raw_status != "NOT_APPLICABLE":
+            raise RuleEvidenceError(
+                f"result raw_status mismatch for non-applicable scope on {rule_id}"
             )
     elif method in {"ai", "human"}:
         if raw_result.raw_status != "PENDING":
@@ -356,6 +380,22 @@ def _result_evidence(raw_result, rules, context):
     )
     if not isinstance(details, dict):
         raise RuleEvidenceError(f"result details must be an object for {rule_id}")
+
+    scope_reason = {"reason": "scope_no_intersection"}
+    if scope_non_applicable:
+        if details != scope_reason:
+            raise RuleEvidenceError(
+                f"result details mismatch for non-applicable scope on {rule_id}"
+            )
+        if raw_result.failure_reason is not None:
+            raise RuleEvidenceError(
+                f"result failure_reason mismatch for non-applicable scope on {rule_id}"
+            )
+    elif details.get("reason") == "scope_no_intersection":
+        raise RuleEvidenceError(
+            f"result claims scope_no_intersection for applicable scope on {rule_id}"
+        )
+
     if raw_result.failure_reason is not None and not isinstance(
         raw_result.failure_reason, str
     ):

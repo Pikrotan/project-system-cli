@@ -585,6 +585,14 @@ def test_matching_rule_evidence_is_rechecked_and_bound_to_finalization(
     verification = json.loads(
         (output / 'verification.json').read_text(encoding='utf-8')
     )
+    captured = []
+    actual_evaluate = validation_module.evaluate_rules
+
+    def capture_context(registry, evaluation_context):
+        captured.append(evaluation_context)
+        return actual_evaluate(registry, evaluation_context)
+
+    monkeypatch.setattr(validation_module, 'evaluate_rules', capture_context)
 
     _, report = finalize_sync(root, pack_path)
 
@@ -592,6 +600,10 @@ def test_matching_rule_evidence_is_rechecked_and_bound_to_finalization(
     assert report['state'] == 'prepared'
     assert report['rule_evidence_fingerprint'] == expected
     assert _load_finalization(output)['rule_evidence_fingerprint'] == expected
+    assert captured[-1].checkpoint == 'sync_verify'
+    assert captured[-1].evaluation_paths == tuple(
+        verification['actual_changed_canonical_paths']
+    )
 
 
 def test_temporary_waiver_expiry_after_verify_fails_before_staging(

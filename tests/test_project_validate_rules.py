@@ -28,6 +28,7 @@ def rule(
     checkpoints=None,
     traceability=None,
     exception_policy="forbidden",
+    scope=None,
 ):
     verification = {"method": method}
     if method == "deterministic":
@@ -49,6 +50,8 @@ def rule(
     }
     if traceability is not None:
         value["traceability"] = traceability
+    if scope is not None:
+        value["scope"] = {"paths": list(scope)}
     return value
 
 
@@ -863,6 +866,40 @@ def test_validate_report_supports_explicit_sync_checkpoint_and_base_commit(tmp_p
     assert sync_report.rule_evidence.base_commit == head
     assert sync_report.rule_evidence.results[0].raw_status == "PASS"
     assert validate(root) == list(default_report.issues)
+
+
+def test_validate_report_passes_explicit_bounded_paths_without_changing_defaults(
+    tmp_path,
+    monkeypatch,
+):
+    root = init_project("Demo", tmp_path / "demo")
+    write_rules(
+        root,
+        {"REPO-001": rule(scope=["docs/**"], severity="INFO")},
+    )
+    git_commit(root)
+    captured = []
+    actual_evaluate = validation_module.evaluate_rules
+
+    def capture_context(registry, evaluation_context):
+        captured.append(evaluation_context)
+        return actual_evaluate(registry, evaluation_context)
+
+    monkeypatch.setattr(validation_module, "evaluate_rules", capture_context)
+    default_report = validate_report(root)
+    bounded_report = validate_report(
+        root,
+        rule_evaluation_paths=("src/main.py",),
+    )
+    public_issues = validate(root)
+
+    assert captured[0].evaluation_paths is None
+    assert captured[1].evaluation_paths == ("src/main.py",)
+    assert captured[2].evaluation_paths is None
+    assert default_report.rule_evidence.results[0].raw_status == "PASS"
+    assert bounded_report.rule_evidence.results[0].raw_status == "NOT_APPLICABLE"
+    assert bounded_report.rule_evidence.results[0].details["reason"] == "scope_no_intersection"
+    assert public_issues == list(default_report.issues)
 
 
 def test_validate_report_rejects_unknown_rule_checkpoint(tmp_path):

@@ -187,6 +187,50 @@ normalized import/dependency facts
 architecture.dependency_boundary
 ```
 
+### Fact Provider contract
+
+Fact Providers are packaged, allowlisted deterministic adapters. They inspect
+bounded source inputs and return normalized language-neutral facts; they do not
+contain architecture policy, choose Rule outcomes, or execute project-supplied
+commands or code. Generic checkers consume those facts in a later stage.
+
+Every provider has a stable packaged ID and implementation version. A provider
+result carries that identity, the sorted inspected source paths, a canonical
+deduplicated fact tuple, and `fact_set_sha256`. The hash is calculated from the
+normalized fact set and is independent of absolute checkout location and
+filesystem enumeration order.
+
+Stage 8A introduces provider `dart.imports`, version `1`. It lexically extracts
+Dart `import`, `export`, `part`, and URI-form `part of` dependency directives,
+including all conditional import/export URI branches, while excluding comments
+and arbitrary string contents. Named `part of library.name;` declarations are
+not resolved heuristically and fail closed. Deferred imports require the valid
+`deferred as prefix` form. Dependency facts retain the source path, directive,
+original URI, and one normalized target kind:
+
+```text
+project    repository-relative target path
+package    external Dart package identity
+dart_sdk   Dart SDK URI
+```
+
+An import of the root package declared by a safely parsed `pubspec.yaml`
+normalizes to its `lib/**` project path. Without a valid package name, package
+URIs remain external rather than being guessed as internal. Declared dependency
+targets need not exist for a fact to be emitted.
+
+Provider evaluation follows the Stage 7 path boundary without depending on Rule
+Engine internals: `evaluation_paths=None` performs deterministic project-wide
+Dart discovery, `evaluation_paths=()` inspects no sources, and a non-empty
+bounded set inspects only existing `.dart` files in that canonical set.
+Project-wide discovery excludes `.git/**`, `.generated/**`, `build/**`, and
+standard Dart tool caches. It never follows symlinks or reparse points.
+
+Unsafe containment, ambiguous reparse state, unreadable or invalid UTF-8 source,
+malformed dependency URIs, unsafe `pubspec.yaml`, and unsupported directive
+syntax fail closed. Stage 8A only produces facts: it does not register or enable
+`architecture.dependency_boundary`; that enforcement belongs to Stage 8B.
+
 ## Rule outcomes
 
 Raw evaluation status is one of:
@@ -618,11 +662,14 @@ Existing deterministic Project System invariants remain in place throughout migr
 4. Integration into project validate and CI gate
 5. Governed exception resolution
 6. SYNC verification and finalization evidence binding
-7. Task-aware Evaluation Context
-8. Dart/Flutter architecture Fact Provider and dependency-boundary checker
-9. Testing, dependency, and security adapters
-10. Task Specification and Risk Engine
-11. One-command bootstrap integration
+7. Bounded Rule Evaluation Context and evaluation paths
+8A. Fact Provider foundation and Dart/Flutter dependency fact extraction
+8B. Generic architecture dependency-boundary checker
+9. Code Verification Adapters
+10. Code Quality Gates
+11. Mutation and Regression Quality
+12. Task Specification, Risk Engine, and Task Obligations
+13. Bootstrap and end-to-end AI Development Gate
 ```
 
 Each stage must preserve existing behavior, add focused tests, inspect the diff, and pass the complete Project System test suite before the next stage.

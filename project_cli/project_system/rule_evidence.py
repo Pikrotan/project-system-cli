@@ -221,13 +221,31 @@ def _context_payload(context):
     if type(context.object_layer_complete) is not bool:
         raise RuleEvidenceError("context object_layer_complete must be a boolean")
     _require_mapping(context.objects, "context objects")
+    complete_rule_ids = context.complete_evaluation_rule_ids
+    if (
+        not isinstance(complete_rule_ids, tuple)
+        or not all(
+            isinstance(rule_id, str) and rule_id
+            for rule_id in complete_rule_ids
+        )
+        or complete_rule_ids != tuple(sorted(set(complete_rule_ids)))
+    ):
+        raise RuleEvidenceError(
+            "context complete_evaluation_rule_ids must be a sorted "
+            "deduplicated tuple of non-empty rule IDs"
+        )
+
+    payload = {
+        "checkpoint": context.checkpoint,
+        "object_layer_complete": context.object_layer_complete,
+        "objects": context.objects,
+        "evaluation_paths": context.evaluation_paths,
+    }
+    if complete_rule_ids:
+        payload["complete_evaluation_rule_ids"] = complete_rule_ids
+
     return _normalize_context_value(
-        {
-            "checkpoint": context.checkpoint,
-            "object_layer_complete": context.object_layer_complete,
-            "objects": context.objects,
-            "evaluation_paths": context.evaluation_paths,
-        },
+        payload,
         project_root=context.project_root,
         location="evaluation_context",
     )
@@ -402,6 +420,19 @@ def _result_evidence(raw_result, rules, context):
         raise RuleEvidenceError(
             f"result failure_reason must be a string or null for {rule_id}"
         )
+
+    if method == "deterministic":
+        outcome_messages = rule_checkers.checker_outcome_contract_messages(
+            expected_checker,
+            raw_result.raw_status,
+            details,
+            raw_result.failure_reason,
+        )
+        if outcome_messages:
+            raise RuleEvidenceError(
+                f"result details are malformed for {rule_id}: "
+                + "; ".join(outcome_messages)
+            )
 
     return RuleResultEvidence(
         rule_id=rule_id,

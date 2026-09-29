@@ -140,6 +140,205 @@ def rule_issues(report, rule_id):
     return [issue for issue in report.issues if issue[1] == rule_id]
 
 
+def architecture_rule(*, severity="BLOCKING", checkpoints=None, scope=None):
+    selected = rule(
+        checker="architecture.dependency_boundary",
+        parameters={
+            "provider": "dart.imports",
+            "source_paths": ["lib/domain/**"],
+            "forbidden_target_paths": ["lib/presentation/**"],
+        },
+        severity=severity,
+        checkpoints=checkpoints,
+        scope=scope,
+    )
+    selected["category"] = "architecture"
+    return selected
+
+
+def write_dart(root, relative, content):
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def test_project_validate_safe_architecture_has_no_issue(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    write_rules(root, {"ARCH-001": architecture_rule()})
+    write_dart(root, "lib/domain/a.dart", "import '../core/a.dart';\n")
+    git_commit(root)
+
+    report = validate_report(root)
+
+    assert report.rule_evidence.results[0].raw_status == "PASS"
+    assert not rule_issues(report, "ARCH-001")
+
+
+def test_project_validate_forbidden_architecture_uses_configured_severity(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    write_rules(root, {"ARCH-001": architecture_rule(severity="BLOCKING")})
+    write_dart(
+        root,
+        "lib/domain/a.dart",
+        "import '../presentation/a.dart';\n",
+    )
+    git_commit(root)
+
+    report = validate_report(root)
+
+    assert report.rule_evidence.results[0].raw_status == "FAIL"
+    assert rule_issues(report, "ARCH-001")[0][0] == "BLOCKING"
+
+
+def test_project_validate_provider_error_is_error_regardless_of_rule_severity(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    write_rules(root, {"ARCH-001": architecture_rule(severity="INFO")})
+    source = root / "lib/domain/a.dart"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"\xff")
+    git_commit(root)
+
+    report = validate_report(root)
+
+    assert report.rule_evidence.results[0].raw_status == "ERROR"
+    assert rule_issues(report, "ARCH-001")[0][0] == "ERROR"
+
+
+def test_project_validate_rejects_architecture_rule_scope_before_evaluation(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    write_rules(
+        root,
+        {"ARCH-001": architecture_rule(scope=("lib/domain/**",))},
+    )
+
+    report = validate_report(root)
+
+    assert report.rule_evidence is None
+    assert any(
+        level == "BLOCKING"
+        and location == RULES_PATH.as_posix()
+        and "must use verification.parameters.source_paths" in message
+        for level, location, message in report.issues
+    )
+
+
+def test_sync_bounded_changed_dart_source_detects_forbidden_edge(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    write_rules(
+        root,
+        {"ARCH-001": architecture_rule(checkpoints=["sync_verify"])},
+    )
+    source = write_dart(
+        root,
+        "lib/domain/a.dart",
+        "import '../core/a.dart';\n",
+    )
+    head = git_commit(root)
+    source.write_text("import '../presentation/a.dart';\n", encoding="utf-8")
+
+    report = validate_report(
+        root,
+        rule_checkpoint="sync_verify",
+        rule_base_commit=head,
+        rule_evaluation_paths=("lib/domain/a.dart",),
+    )
+
+    result = report.rule_evidence.results[0]
+    assert result.raw_status == "FAIL"
+    assert result.details["provider_evaluation_mode"] == "bounded"
+    assert result.details["inspected_source_paths"] == ["lib/domain/a.dart"]
+
+
+def test_sync_bounded_unrelated_path_does_not_scan_existing_violation(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    write_rules(
+        root,
+        {"ARCH-001": architecture_rule(checkpoints=["sync_verify"])},
+    )
+    write_dart(
+        root,
+        "lib/domain/legacy.dart",
+        "import '../presentation/legacy.dart';\n",
+    )
+    head = git_commit(root)
+
+    report = validate_report(
+        root,
+        rule_checkpoint="sync_verify",
+        rule_base_commit=head,
+        rule_evaluation_paths=("README.md",),
+    )
+
+    result = report.rule_evidence.results[0]
+    assert result.raw_status == "PASS"
+    assert result.details["provider_evaluation_mode"] == "bounded"
+    assert result.details["inspected_source_paths"] == []
+
+
+def test_sync_pubspec_change_reclassifies_and_detects_existing_edge(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    write_rules(
+        root,
+        {"ARCH-001": architecture_rule(checkpoints=["sync_verify"])},
+    )
+    write_dart(
+        root,
+        "lib/domain/a.dart",
+        "import 'package:new_name/presentation/a.dart';\n",
+    )
+    pubspec = root / "pubspec.yaml"
+    pubspec.write_text("name: old_name\n", encoding="utf-8")
+    head = git_commit(root)
+
+    before = validate_report(
+        root,
+        rule_checkpoint="sync_verify",
+        rule_base_commit=head,
+        rule_evaluation_paths=("lib/domain/a.dart",),
+    )
+    assert before.rule_evidence.results[0].raw_status == "PASS"
+
+    pubspec.write_text("name: new_name\n", encoding="utf-8")
+
+    report = validate_report(
+        root,
+        rule_checkpoint="sync_verify",
+        rule_base_commit=head,
+        rule_evaluation_paths=("pubspec.yaml",),
+    )
+
+    result = report.rule_evidence.results[0]
+    assert result.raw_status == "FAIL"
+    assert result.details["provider_evaluation_mode"] == "project_wide_invalidation"
+    assert result.details["violations"][0]["target_path"] == "lib/presentation/a.dart"
+
+
+def test_sync_rules_registry_change_forces_complete_architecture_evaluation(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    write_dart(
+        root,
+        "lib/domain/a.dart",
+        "import '../presentation/a.dart';\n",
+    )
+    head = git_commit(root)
+    write_rules(
+        root,
+        {"ARCH-001": architecture_rule(checkpoints=["sync_verify"])},
+    )
+
+    report = validate_report(
+        root,
+        rule_checkpoint="sync_verify",
+        rule_base_commit=head,
+        rule_evaluation_paths=(RULES_PATH.as_posix(),),
+    )
+
+    result = report.rule_evidence.results[0]
+    assert result.raw_status == "FAIL"
+    assert result.details["provider_evaluation_mode"] == "project_wide_invalidation"
+
+
 def test_empty_rules_preserve_validate_compatibility_without_git(tmp_path, monkeypatch):
     root = init_project("Demo", tmp_path / "demo")
 
@@ -941,3 +1140,152 @@ def test_validate_report_uses_explicit_exception_clock_without_sampling_wall_clo
 
     assert report.rule_evidence.results[0].effective_status == "WAIVED"
     assert report.rule_evidence.base_commit == head
+
+def test_sync_exception_registry_revocation_rechecks_existing_architecture_violation(
+    tmp_path,
+):
+    root = init_project("Demo", tmp_path / "demo")
+
+    _, decision_id = create_object(
+        root,
+        "decision",
+        "Approve architecture exception",
+        "governance",
+        "project-owner",
+    )
+
+    selected_rule = architecture_rule(checkpoints=["sync_verify"])
+    selected_rule["exception_policy"] = "decision_required"
+    write_rules(root, {"ARCH-001": selected_rule})
+
+    write_dart(
+        root,
+        "lib/domain/legacy.dart",
+        "import '../presentation/legacy.dart';\n",
+    )
+
+    write_exceptions(
+        root,
+        {
+            "EXC-20260927-abcdef12": governed_exception(
+                "ARCH-001",
+                decision_id,
+                paths=("lib/domain/legacy.dart",),
+            )
+        },
+    )
+
+    head = git_commit(root)
+
+    write_exceptions(
+        root,
+        {
+            "EXC-20260927-abcdef12": governed_exception(
+                "ARCH-001",
+                decision_id,
+                paths=("lib/domain/legacy.dart",),
+                state="revoked",
+            )
+        },
+    )
+
+    report = validate_report(
+        root,
+        rule_checkpoint="sync_verify",
+        rule_base_commit=head,
+        rule_evaluation_paths=(EXCEPTIONS_PATH.as_posix(),),
+        rule_as_of=validation_module.datetime(
+            2026, 9, 27, 11, 30, tzinfo=validation_module.timezone.utc
+        ),
+    )
+
+    result = report.rule_evidence.results[0]
+
+    assert result.raw_status == "FAIL"
+    assert result.effective_status == "FAIL"
+    assert result.details["provider_evaluation_mode"] == "project_wide_invalidation"
+    assert result.details["inspected_source_paths"] == ["lib/domain/legacy.dart"]
+    assert rule_issues(report, "ARCH-001")[0][0] == "BLOCKING"
+
+
+def test_sync_temporary_architecture_exception_rechecks_project_for_time_expiry(
+    tmp_path,
+):
+    root = init_project("Demo", tmp_path / "demo")
+
+    _, decision_id = create_object(
+        root,
+        "decision",
+        "Approve temporary architecture exception",
+        "governance",
+        "project-owner",
+    )
+
+    selected_rule = architecture_rule(checkpoints=["sync_verify"])
+    selected_rule["exception_policy"] = "decision_required"
+    write_rules(root, {"ARCH-001": selected_rule})
+
+    write_dart(
+        root,
+        "lib/domain/legacy.dart",
+        "import '../presentation/legacy.dart';\n",
+    )
+
+    write_exceptions(
+        root,
+        {
+            "EXC-20260927-abcdef12": governed_exception(
+                "ARCH-001",
+                decision_id,
+                paths=("lib/domain/legacy.dart",),
+                mode="temporary",
+                expires_at="2026-09-27T12:00:00Z",
+            )
+        },
+    )
+
+    head = git_commit(root)
+
+    (root / "README.md").write_text(
+        "unrelated bounded change\n",
+        encoding="utf-8",
+    )
+
+    before_expiry = validate_report(
+        root,
+        rule_checkpoint="sync_verify",
+        rule_base_commit=head,
+        rule_evaluation_paths=("README.md",),
+        rule_as_of=validation_module.datetime(
+            2026, 9, 27, 11, 59, 59, tzinfo=validation_module.timezone.utc
+        ),
+    )
+
+    before_result = before_expiry.rule_evidence.results[0]
+
+    assert before_result.raw_status == "FAIL"
+    assert before_result.effective_status == "WAIVED"
+    assert before_result.details["provider_evaluation_mode"] == "project_wide"
+    assert before_result.details["inspected_source_paths"] == [
+        "lib/domain/legacy.dart"
+    ]
+
+    at_expiry = validate_report(
+        root,
+        rule_checkpoint="sync_verify",
+        rule_base_commit=head,
+        rule_evaluation_paths=("README.md",),
+        rule_as_of=validation_module.datetime(
+            2026, 9, 27, 12, 0, tzinfo=validation_module.timezone.utc
+        ),
+    )
+
+    expired_result = at_expiry.rule_evidence.results[0]
+
+    assert expired_result.raw_status == "FAIL"
+    assert expired_result.effective_status == "FAIL"
+    assert expired_result.details["provider_evaluation_mode"] == "project_wide"
+    assert expired_result.details["inspected_source_paths"] == [
+        "lib/domain/legacy.dart"
+    ]
+    assert rule_issues(at_expiry, "ARCH-001")[0][0] == "BLOCKING"

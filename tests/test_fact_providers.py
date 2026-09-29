@@ -7,6 +7,7 @@ from project_system.fact_providers import (
     FactProviderError,
     dependency_fact_to_dict,
     evaluate_fact_provider,
+    resolve_fact_provider_evaluation,
 )
 
 
@@ -21,7 +22,39 @@ def test_dart_provider_is_allowlisted_with_stable_identity():
     spec = FACT_PROVIDER_REGISTRY["dart.imports"]
     assert spec.provider_id == "dart.imports"
     assert spec.version == "1"
+    assert spec.global_input_patterns == ("pubspec.yaml",)
     assert callable(spec.implementation)
+
+
+def test_provider_global_input_forces_project_wide_invalidation():
+    paths, mode = resolve_fact_provider_evaluation(
+        "dart.imports",
+        ("pubspec.yaml",),
+    )
+
+    assert paths is None
+    assert mode == "project_wide_invalidation"
+
+
+def test_provider_normal_bounded_paths_remain_bounded():
+    paths, mode = resolve_fact_provider_evaluation(
+        "dart.imports",
+        ("lib/domain/a.dart",),
+    )
+
+    assert paths == ("lib/domain/a.dart",)
+    assert mode == "bounded"
+
+
+def test_additional_invalidator_uses_shared_scope_matching():
+    paths, mode = resolve_fact_provider_evaluation(
+        "dart.imports",
+        (".project/policies/rules.yaml",),
+        additional_global_input_patterns=(".project/policies/rules.yaml",),
+    )
+
+    assert paths is None
+    assert mode == "project_wide_invalidation"
 
 
 def test_unknown_provider_fails_closed(tmp_path):

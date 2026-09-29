@@ -159,6 +159,54 @@ def _violation_paths(result, context):
                 )
             paths.append(_object_path(context, object_id, objects[object_id]))
         return tuple(sorted(paths))
+    if result.checker == "architecture.dependency_boundary":
+        violations = details.get("violations")
+        if (
+            not isinstance(violations, Sequence)
+            or isinstance(violations, (str, bytes))
+            or not violations
+        ):
+            raise RuleExceptionResolutionError(
+                f"results.{result.rule_id}.details.violations must be a non-empty sequence"
+            )
+        normalized = []
+        expected_fields = {
+            "source_path",
+            "directive",
+            "target_path",
+            "target_uri",
+        }
+        for index, violation in enumerate(violations):
+            label = f"results.{result.rule_id}.details.violations[{index}]"
+            item = _mapping(violation, label)
+            if set(item) != expected_fields:
+                raise RuleExceptionResolutionError(
+                    f"{label} must contain exactly source_path, directive, "
+                    "target_path, and target_uri"
+                )
+            source = _canonical_path(
+                item.get("source_path"),
+                f"{label}.source_path",
+                pattern=False,
+            )
+            target = _canonical_path(
+                item.get("target_path"),
+                f"{label}.target_path",
+                pattern=False,
+            )
+            directive = _nonempty_string(
+                item.get("directive"), f"{label}.directive"
+            )
+            target_uri = _nonempty_string(
+                item.get("target_uri"), f"{label}.target_uri"
+            )
+            normalized.append((source, directive, target, target_uri))
+        if normalized != sorted(set(normalized)):
+            raise RuleExceptionResolutionError(
+                f"results.{result.rule_id}.details.violations must be sorted "
+                "and deduplicated"
+            )
+        return tuple(sorted({item[0] for item in normalized}))
     raise RuleExceptionResolutionError(
         f"results.{result.rule_id} uses unsupported checker for exception scope: "
         f"{result.checker!r}"

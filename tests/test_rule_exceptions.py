@@ -149,6 +149,74 @@ def test_valid_permanent_exception_applies_without_mutating_raw_result(tmp_path)
     assert raw.raw_status == "FAIL"
 
 
+def architecture_details(*, malformed=False):
+    violation = {
+        "source_path": "lib/domain/legacy.dart",
+        "directive": "import",
+        "target_path": "lib/presentation/widget.dart",
+        "target_uri": "../presentation/widget.dart",
+    }
+    if malformed:
+        violation.pop("target_path")
+    return {
+        "provider_id": "dart.imports",
+        "provider_version": "1",
+        "fact_set_sha256": "0" * 64,
+        "inspected_source_paths": ["lib/domain/legacy.dart"],
+        "provider_evaluation_mode": "project_wide",
+        "source_paths": ["lib/domain/**"],
+        "forbidden_target_paths": ["lib/presentation/**"],
+        "violations": [violation],
+    }
+
+
+def test_architecture_exception_scope_uses_violating_source_path(tmp_path):
+    raw = result(
+        rule_id="ARCH-001",
+        checker="architecture.dependency_boundary",
+        details=architecture_details(),
+    )
+    resolved = resolve(
+        tmp_path,
+        rules={
+            "ARCH-001": rule(checker="architecture.dependency_boundary")
+        },
+        exceptions={
+            "EXC-20260927-aaaa0001": exception(
+                rule_id="ARCH-001",
+                paths=("lib/domain/legacy.dart",),
+            )
+        },
+        results=[raw],
+    )
+
+    assert resolved.applications == (
+        RuleExceptionApplication("ARCH-001", "EXC-20260927-aaaa0001"),
+    )
+
+
+def test_malformed_architecture_violation_fails_exception_resolution(tmp_path):
+    raw = result(
+        rule_id="ARCH-001",
+        checker="architecture.dependency_boundary",
+        details=architecture_details(malformed=True),
+    )
+    with pytest.raises(RuleExceptionResolutionError, match="violations"):
+        resolve(
+            tmp_path,
+            rules={
+                "ARCH-001": rule(checker="architecture.dependency_boundary")
+            },
+            exceptions={
+                "EXC-20260927-aaaa0001": exception(
+                    rule_id="ARCH-001",
+                    paths=("lib/domain/legacy.dart",),
+                )
+            },
+            results=[raw],
+        )
+
+
 @pytest.mark.parametrize("policy", ["forbidden"])
 def test_forbidden_exception_policy_never_waives(tmp_path, policy):
     assert resolve(

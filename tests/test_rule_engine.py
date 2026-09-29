@@ -51,12 +51,14 @@ def context(
     checkpoint="project_validate",
     objects=None,
     evaluation_paths=None,
+    complete_evaluation_rule_ids=(),
 ):
     return RuleEvaluationContext(
         project_root=Path(root),
         checkpoint=checkpoint,
         objects={} if objects is None else objects,
         evaluation_paths=evaluation_paths,
+        complete_evaluation_rule_ids=complete_evaluation_rule_ids,
     )
 
 
@@ -316,3 +318,69 @@ def test_object_layer_completeness_defaults_fail_closed(tmp_path):
     )
 
     assert ctx.object_layer_complete is False
+
+@pytest.mark.parametrize(
+    ("selected_rule", "expected"),
+    [
+        (None, "unknown rule_id"),
+        (rule(status="draft"), "non-active rule_id"),
+        (rule(method="human"), "requires deterministic rule_id"),
+    ],
+)
+def test_complete_evaluation_rule_ids_fail_closed_when_obligation_is_invalid(
+    tmp_path,
+    selected_rule,
+    expected,
+):
+    rules = {}
+    if selected_rule is not None:
+        rules["REPO-001"] = selected_rule
+
+    with pytest.raises(ValueError, match=expected):
+        evaluate_rules(
+            registry(**rules),
+            context(
+                tmp_path,
+                evaluation_paths=("README.md",),
+                complete_evaluation_rule_ids=("REPO-001",),
+            ),
+        )
+
+
+def test_complete_evaluation_rule_ids_is_per_rule_and_does_not_mutate_context(
+    tmp_path,
+    monkeypatch,
+):
+    import project_system.rule_checkers as checker_module
+
+    bounded_context = context(
+        tmp_path,
+        evaluation_paths=("README.md",),
+        complete_evaluation_rule_ids=("REPO-001",),
+    )
+    observed = {}
+
+    def capture(checker_id, checker_context, parameters):
+        observed[parameters["path"]] = checker_context.evaluation_paths
+        return checker_module.CheckerOutcome(
+            "PASS",
+            {"path": parameters["path"], "exists": True},
+        )
+
+    monkeypatch.setattr(checker_module, "evaluate_checker", capture)
+
+    results = evaluate_rules(
+        registry(
+            **{
+                "REPO-001": rule(parameters={"path": "README.md"}),
+                "REPO-002": rule(parameters={"path": "docs/other.md"}),
+            }
+        ),
+        bounded_context,
+    )
+
+    assert [result.raw_status for result in results] == ["PASS", "PASS"]
+    assert observed["README.md"] is None
+    assert observed["docs/other.md"] == ("README.md",)
+    assert bounded_context.evaluation_paths == ("README.md",)
+    assert bounded_context.complete_evaluation_rule_ids == ("REPO-001",)

@@ -622,6 +622,39 @@ def test_sync_verify_persists_common_pass_evidence_bound_to_exact_state(tmp_path
     assert 'rules_registry_sha256' not in report
 
 
+def test_sync_verify_unrelated_canonical_change_keeps_architecture_bounded(tmp_path):
+    def configure(root, path, object_id):
+        source = root / 'lib/domain/legacy.dart'
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(
+            "import '../presentation/legacy.dart';\n",
+            encoding='utf-8',
+        )
+        selected = _sync_rule(
+            checker='architecture.dependency_boundary',
+        )
+        selected['category'] = 'architecture'
+        selected['verification']['parameters'] = {
+            'provider': 'dart.imports',
+            'source_paths': ['lib/domain/**'],
+            'forbidden_target_paths': ['lib/presentation/**'],
+        }
+        _write_rule_layer(root, {'ARCH-001': selected})
+
+    root, path, _, _, _, pack_path, _, _ = _setup_update_plan(
+        tmp_path,
+        configure=configure,
+    )
+    _append_body(path)
+
+    _, report = verify_sync(root, pack_path)
+
+    result = report['rule_evidence_binding']['evidence']['results'][0]
+    assert result['raw_status'] == 'PASS'
+    assert result['details']['provider_evaluation_mode'] == 'bounded'
+    assert result['details']['inspected_source_paths'] == []
+
+
 def test_sync_verify_scoped_rule_outside_actual_changes_is_not_applicable(
     tmp_path,
     monkeypatch,

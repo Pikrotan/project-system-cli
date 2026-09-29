@@ -1,6 +1,6 @@
 """Allowlisted deterministic checkers for Executable Rules v1 Stage 2A."""
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import os
 from pathlib import Path, PurePosixPath
@@ -10,11 +10,13 @@ from types import MappingProxyType
 from typing import Any
 
 from .object_loader import TYPE_DIRECTORIES
+from .rule_scope import RuleScopeError, canonical_rule_path, scope_pattern_matches
 
 
 CHECKER_VERSION = "1"
 _FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _GLOB_CHARACTERS = frozenset("*?[]")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,7 @@ class CheckerSpec:
     version: str
     parameter_validator: Callable[[object], tuple[str, ...]]
     implementation: Callable[[object, Mapping[str, object]], CheckerOutcome]
+    outcome_validator: Callable[[str, object, object], tuple[str, ...]] | None = None
 
 
 class _FilesystemInspectionError(RuntimeError):
@@ -125,6 +128,300 @@ def _knowledge_parameter_messages(parameters):
             messages.append(
                 "field must be a top-level field name without dotted/nested expressions"
             )
+    return tuple(messages)
+
+
+def _pattern_sequence_messages(value, label):
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or not value
+    ):
+        return (f"{label} must be a non-empty sequence",)
+    messages = []
+    normalized = []
+    for index, pattern in enumerate(value):
+        try:
+            normalized.append(
+                canonical_rule_path(
+                    pattern,
+                    f"{label}[{index}]",
+                    pattern=True,
+                )
+            )
+        except RuleScopeError as exc:
+            messages.append(str(exc))
+    if len(normalized) != len(set(normalized)):
+        messages.append(f"{label} contains duplicates")
+    return tuple(messages)
+
+
+def _dependency_boundary_parameter_messages(parameters):
+    from .fact_providers import FACT_PROVIDER_REGISTRY
+
+    messages, normalized = _parameter_shape_messages(
+        parameters,
+        required=("provider", "source_paths", "forbidden_target_paths"),
+        allowed=("provider", "source_paths", "forbidden_target_paths"),
+    )
+    messages = list(messages)
+    if normalized is None:
+        return tuple(messages)
+    if "provider" in normalized:
+        provider = normalized["provider"]
+        if not isinstance(provider, str) or provider not in FACT_PROVIDER_REGISTRY:
+            messages.append(f"unknown Fact Provider: {provider!r}")
+    for name in ("source_paths", "forbidden_target_paths"):
+        if name in normalized:
+            messages.extend(_pattern_sequence_messages(normalized[name], name))
+    return tuple(messages)
+
+
+def _normalized_patterns(value):
+    return tuple(sorted(set(value)))
+
+
+def _dependency_violation(fact):
+    return {
+        "source_path": fact.source_path,
+        "directive": fact.directive,
+        "target_path": fact.target_path,
+        "target_uri": fact.target_uri,
+    }
+
+
+def _dependency_boundary(context, parameters):
+    from .fact_providers import (
+        FACT_PROVIDER_REGISTRY,
+        FactProviderError,
+        evaluate_fact_provider,
+        resolve_fact_provider_evaluation,
+        validate_fact_provider_result,
+    )
+    from .rules import RULES_REGISTRY, RULE_EXCEPTIONS_REGISTRY
+
+    provider_id = parameters["provider"]
+    source_paths = _normalized_patterns(parameters["source_paths"])
+    forbidden_target_paths = _normalized_patterns(
+        parameters["forbidden_target_paths"]
+    )
+    spec = FACT_PROVIDER_REGISTRY[provider_id]
+    try:
+        provider_paths, mode = resolve_fact_provider_evaluation(
+            provider_id,
+            context.evaluation_paths,
+            additional_global_input_patterns=(
+                RULES_REGISTRY.as_posix(),
+                RULE_EXCEPTIONS_REGISTRY.as_posix(),
+            ),
+        )
+        provider_result = evaluate_fact_provider(
+            provider_id,
+            context.project_root,
+            evaluation_paths=provider_paths,
+        )
+        provider_result = validate_fact_provider_result(
+            provider_result,
+            expected_provider_id=provider_id,
+            bounded_evaluation_paths=provider_paths,
+        )
+    except FactProviderError:
+        return CheckerOutcome(
+            "ERROR",
+            {
+                "provider_id": provider_id,
+                "provider_version": spec.version,
+                "source_paths": list(source_paths),
+                "forbidden_target_paths": list(forbidden_target_paths),
+                "violations": [],
+            },
+            f"Fact Provider {provider_id!r} could not establish trustworthy dependency facts",
+        )
+
+    violations = []
+    for fact in provider_result.facts:
+        if fact.target_kind != "project":
+            continue
+        if not any(
+            scope_pattern_matches(pattern, fact.source_path)
+            for pattern in source_paths
+        ):
+            continue
+        if any(
+            scope_pattern_matches(pattern, fact.target_path)
+            for pattern in forbidden_target_paths
+        ):
+            violations.append(_dependency_violation(fact))
+    violations.sort(
+        key=lambda item: (
+            item["source_path"],
+            item["directive"],
+            item["target_path"],
+            item["target_uri"],
+        )
+    )
+    details = {
+        "provider_id": provider_result.provider_id,
+        "provider_version": provider_result.provider_version,
+        "fact_set_sha256": provider_result.fact_set_sha256,
+        "inspected_source_paths": list(provider_result.inspected_source_paths),
+        "provider_evaluation_mode": mode,
+        "source_paths": list(source_paths),
+        "forbidden_target_paths": list(forbidden_target_paths),
+        "violations": violations,
+    }
+    if violations:
+        return CheckerOutcome(
+            "FAIL",
+            details,
+            f"forbidden project dependency edges found: {len(violations)}",
+        )
+    return CheckerOutcome("PASS", details)
+
+
+def _canonical_sequence_messages(value, label, *, pattern):
+    if not isinstance(value, list):
+        return [f"{label} must be a list"]
+    messages = []
+    normalized = []
+    for index, item in enumerate(value):
+        try:
+            normalized.append(
+                canonical_rule_path(
+                    item,
+                    f"{label}[{index}]",
+                    pattern=pattern,
+                )
+            )
+        except RuleScopeError as exc:
+            messages.append(str(exc))
+    if value != sorted(set(normalized)):
+        messages.append(f"{label} must be sorted and deduplicated")
+    return messages
+
+
+def _dependency_boundary_outcome_messages(raw_status, details, failure_reason):
+    from .fact_providers import FACT_PROVIDER_REGISTRY
+
+    if raw_status not in {"PASS", "FAIL"}:
+        return ()
+    if not isinstance(details, Mapping):
+        return ("dependency boundary details must be a mapping/object",)
+    required = {
+        "provider_id",
+        "provider_version",
+        "fact_set_sha256",
+        "inspected_source_paths",
+        "provider_evaluation_mode",
+        "source_paths",
+        "forbidden_target_paths",
+        "violations",
+    }
+    messages = []
+    if set(details) != required:
+        messages.append("dependency boundary details fields are malformed")
+    provider_id = details.get("provider_id")
+    spec = FACT_PROVIDER_REGISTRY.get(provider_id) if isinstance(provider_id, str) else None
+    if spec is None:
+        messages.append("dependency boundary provider_id is unknown")
+    elif details.get("provider_version") != spec.version:
+        messages.append("dependency boundary provider_version is inconsistent")
+    fact_hash = details.get("fact_set_sha256")
+    if not isinstance(fact_hash, str) or not _SHA256_RE.fullmatch(fact_hash):
+        messages.append("dependency boundary fact_set_sha256 is malformed")
+    if details.get("provider_evaluation_mode") not in {
+        "bounded",
+        "project_wide",
+        "project_wide_invalidation",
+    }:
+        messages.append("dependency boundary provider_evaluation_mode is malformed")
+    messages.extend(
+        _canonical_sequence_messages(
+            details.get("inspected_source_paths"),
+            "dependency boundary inspected_source_paths",
+            pattern=False,
+        )
+    )
+    for name in ("source_paths", "forbidden_target_paths"):
+        messages.extend(
+            _canonical_sequence_messages(
+                details.get(name),
+                f"dependency boundary {name}",
+                pattern=True,
+            )
+        )
+        if details.get(name) == []:
+            messages.append(f"dependency boundary {name} must not be empty")
+    violations = details.get("violations")
+    if not isinstance(violations, list):
+        messages.append("dependency boundary violations must be a list")
+        violations = []
+    normalized_violations = []
+    inspected = details.get("inspected_source_paths")
+    sources = details.get("source_paths")
+    targets = details.get("forbidden_target_paths")
+    for index, violation in enumerate(violations):
+        label = f"dependency boundary violations[{index}]"
+        if not isinstance(violation, Mapping) or set(violation) != {
+            "source_path",
+            "directive",
+            "target_path",
+            "target_uri",
+        }:
+            messages.append(f"{label} is malformed")
+            continue
+        try:
+            source = canonical_rule_path(
+                violation.get("source_path"), f"{label}.source_path", pattern=False
+            )
+            target = canonical_rule_path(
+                violation.get("target_path"), f"{label}.target_path", pattern=False
+            )
+        except RuleScopeError as exc:
+            messages.append(str(exc))
+            continue
+        directive = violation.get("directive")
+        target_uri = violation.get("target_uri")
+        if not isinstance(directive, str) or not directive:
+            messages.append(f"{label}.directive must be a non-empty string")
+        if not isinstance(target_uri, str) or not target_uri:
+            messages.append(f"{label}.target_uri must be a non-empty string")
+        if isinstance(inspected, list) and source not in inspected:
+            messages.append(f"{label}.source_path was not inspected")
+        if isinstance(sources, list):
+            try:
+                source_matches = any(
+                    scope_pattern_matches(pattern, source) for pattern in sources
+                )
+            except RuleScopeError:
+                source_matches = False
+            if not source_matches:
+                messages.append(f"{label}.source_path does not match source_paths")
+        if isinstance(targets, list):
+            try:
+                target_matches = any(
+                    scope_pattern_matches(pattern, target) for pattern in targets
+                )
+            except RuleScopeError:
+                target_matches = False
+            if not target_matches:
+                messages.append(
+                    f"{label}.target_path does not match forbidden_target_paths"
+                )
+        if isinstance(directive, str) and isinstance(target_uri, str):
+            normalized_violations.append((source, directive, target, target_uri))
+    if normalized_violations != sorted(set(normalized_violations)):
+        messages.append("dependency boundary violations must be sorted and deduplicated")
+    if raw_status == "PASS" and violations:
+        messages.append("dependency boundary PASS must not contain violations")
+    if raw_status == "FAIL" and not violations:
+        messages.append("dependency boundary FAIL must contain violations")
+    if raw_status == "PASS" and failure_reason is not None:
+        messages.append("dependency boundary PASS must not have a failure reason")
+    if raw_status == "FAIL" and (
+        not isinstance(failure_reason, str) or not failure_reason
+    ):
+        messages.append("dependency boundary FAIL requires a failure reason")
     return tuple(messages)
 
 
@@ -272,6 +569,13 @@ def _required_field(context, parameters):
 
 CHECKER_REGISTRY = MappingProxyType(
     {
+        "architecture.dependency_boundary": CheckerSpec(
+            "architecture.dependency_boundary",
+            CHECKER_VERSION,
+            _dependency_boundary_parameter_messages,
+            _dependency_boundary,
+            _dependency_boundary_outcome_messages,
+        ),
         "repository.required_path": CheckerSpec(
             "repository.required_path",
             CHECKER_VERSION,
@@ -301,6 +605,18 @@ def checker_contract_messages(checker_id, parameters):
     return spec.parameter_validator(parameters)
 
 
+def checker_outcome_contract_messages(
+    checker_id,
+    raw_status,
+    details,
+    failure_reason,
+):
+    spec = CHECKER_REGISTRY.get(checker_id)
+    if spec is None or spec.outcome_validator is None:
+        return ()
+    return spec.outcome_validator(raw_status, details, failure_reason)
+
+
 def evaluate_checker(checker_id, context, parameters):
     """Evaluate one checker after fail-closed runtime contract validation.
 
@@ -321,4 +637,23 @@ def evaluate_checker(checker_id, context, parameters):
             {"checker": checker_id, "contract_errors": list(messages)},
             "invalid checker parameters: " + "; ".join(messages),
         )
-    return spec.implementation(context, parameters)
+    outcome = spec.implementation(context, parameters)
+    if not isinstance(outcome, CheckerOutcome):
+        return CheckerOutcome(
+            "ERROR",
+            {"checker": checker_id},
+            "checker returned a malformed outcome",
+        )
+    messages = checker_outcome_contract_messages(
+        checker_id,
+        outcome.raw_status,
+        outcome.details,
+        outcome.failure_reason,
+    )
+    if messages:
+        return CheckerOutcome(
+            "ERROR",
+            {"checker": checker_id, "outcome_contract_errors": list(messages)},
+            "checker returned malformed outcome: " + "; ".join(messages),
+        )
+    return outcome

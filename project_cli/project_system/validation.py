@@ -89,6 +89,46 @@ def _active_rules(layer):
     )
 
 
+def _temporary_exception_complete_evaluation_rule_ids(layer):
+    """Return architecture Rules whose active temporary waiver is time-dependent."""
+    rules_registry = layer.rules_registry
+    exception_registry = layer.exception_registry
+    if not isinstance(rules_registry, dict) or not isinstance(exception_registry, dict):
+        return ()
+
+    rules = rules_registry.get("rules")
+    exceptions = exception_registry.get("exceptions")
+    if not isinstance(rules, dict) or not isinstance(exceptions, dict):
+        return ()
+
+    rule_ids = set()
+    for exception in exceptions.values():
+        if not isinstance(exception, dict):
+            continue
+        if exception.get("state") != "active" or exception.get("mode") != "temporary":
+            continue
+
+        rule_id = exception.get("rule_id")
+        rule = rules.get(rule_id)
+        if not isinstance(rule, dict):
+            continue
+        if (
+            rule.get("status") != "active"
+            or rule.get("exception_policy") != "decision_required"
+        ):
+            continue
+
+        verification = rule.get("verification")
+        if (
+            isinstance(verification, dict)
+            and verification.get("method") == "deterministic"
+            and verification.get("checker") == "architecture.dependency_boundary"
+        ):
+            rule_ids.add(rule_id)
+
+    return tuple(sorted(rule_ids))
+
+
 def _rule_preconditions(layer,reference_issues,cfg,project_schema_messages):
     return (
         not project_schema_messages
@@ -204,6 +244,9 @@ def validate_report(
                 objects=layer.objects,
                 object_layer_complete=_object_layer_is_complete(layer),
                 evaluation_paths=rule_evaluation_paths,
+                complete_evaluation_rule_ids=(
+                    _temporary_exception_complete_evaluation_rule_ids(rule_layer)
+                ),
             )
             results=evaluate_rules(rule_layer.rules_registry,context)
             try:

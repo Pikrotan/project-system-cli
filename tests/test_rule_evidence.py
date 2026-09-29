@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from project_system.rule_engine import RuleEvaluationContext, RuleEvaluationResult
+from project_system.rule_engine import (
+    RuleEvaluationContext,
+    RuleEvaluationResult,
+    evaluate_rules,
+)
 from project_system.rule_exceptions import (
     RuleExceptionApplication,
     RuleExceptionResolution,
@@ -30,13 +34,16 @@ def rule(
     scope=None,
     description="Evidence test rule.",
     exception_policy="forbidden",
+    parameters=None,
 ):
     verification = {"method": method}
     if method == "deterministic":
         verification.update(
             {
                 "checker": checker,
-                "parameters": {"path": "README.md"},
+                "parameters": (
+                    {"path": "README.md"} if parameters is None else parameters
+                ),
             }
         )
     value = {
@@ -79,6 +86,7 @@ def context(
     objects=None,
     complete=True,
     evaluation_paths=None,
+    complete_evaluation_rule_ids=(),
 ):
     return RuleEvaluationContext(
         project_root=Path(root),
@@ -86,6 +94,7 @@ def context(
         objects={} if objects is None else objects,
         object_layer_complete=complete,
         evaluation_paths=evaluation_paths,
+        complete_evaluation_rule_ids=complete_evaluation_rule_ids,
     )
 
 
@@ -147,6 +156,69 @@ def test_canonical_hash_ignores_mapping_insertion_order():
     assert canonical_sha256({"a": 1, "b": 2}) == canonical_sha256(
         {"b": 2, "a": 1}
     )
+
+
+def architecture_rule():
+    return rule(
+        checker="architecture.dependency_boundary",
+        parameters={
+            "provider": "dart.imports",
+            "source_paths": ["lib/domain/**"],
+            "forbidden_target_paths": ["lib/presentation/**"],
+        },
+    )
+
+
+def _write_dart(root, content):
+    path = root / "lib/domain/a.dart"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def test_architecture_evidence_binds_provider_identity_and_dependency_hash(tmp_path):
+    registry = rules_registry({"ARCH-001": architecture_rule()})
+    selected_context = context(tmp_path)
+    source = _write_dart(tmp_path, "import '../core/a.dart';\n")
+    safe_results = evaluate_rules(registry, selected_context)
+    safe = build(
+        tmp_path,
+        registry=registry,
+        ctx=selected_context,
+        results=safe_results,
+    )
+
+    source.write_text("import '../presentation/a.dart';\n", encoding="utf-8")
+    forbidden_results = evaluate_rules(registry, selected_context)
+    forbidden = build(
+        tmp_path,
+        registry=registry,
+        ctx=selected_context,
+        results=forbidden_results,
+    )
+
+    details = forbidden.results[0].details
+    assert details["provider_id"] == "dart.imports"
+    assert details["provider_version"] == "1"
+    assert safe.results[0].details["fact_set_sha256"] != details["fact_set_sha256"]
+    assert safe.evidence_fingerprint != forbidden.evidence_fingerprint
+
+
+def test_evidence_rejects_forged_architecture_pass_details(tmp_path):
+    registry = rules_registry({"ARCH-001": architecture_rule()})
+    forged = result(
+        rule_id="ARCH-001",
+        checker="architecture.dependency_boundary",
+        status="PASS",
+        details={
+            "provider_id": "dart.imports",
+            "provider_version": "1",
+            "violations": [],
+        },
+    )
+
+    with pytest.raises(RuleEvidenceError, match="malformed"):
+        build(tmp_path, registry=registry, results=[forged])
 
 
 def test_canonical_hash_normalizes_tuple_like_list():
@@ -269,6 +341,43 @@ def test_bounded_evaluation_paths_change_context_and_evidence_fingerprints(tmp_p
     )
     assert first.evaluation_context_sha256 != second.evaluation_context_sha256
     assert first.evidence_fingerprint != second.evidence_fingerprint
+
+
+def test_complete_evaluation_obligation_changes_context_and_evidence_fingerprints(
+    tmp_path,
+):
+    bounded = build(
+        tmp_path,
+        ctx=context(
+            tmp_path,
+            evaluation_paths=("README.md",),
+        ),
+    )
+    complete = build(
+        tmp_path,
+        ctx=context(
+            tmp_path,
+            evaluation_paths=("README.md",),
+            complete_evaluation_rule_ids=("REPO-001",),
+        ),
+    )
+
+    assert bounded.evaluation_context_sha256 != complete.evaluation_context_sha256
+    assert bounded.evidence_fingerprint != complete.evidence_fingerprint
+
+    bounded_payload = _context_payload(
+        context(tmp_path, evaluation_paths=("README.md",))
+    )
+    complete_payload = _context_payload(
+        context(
+            tmp_path,
+            evaluation_paths=("README.md",),
+            complete_evaluation_rule_ids=("REPO-001",),
+        )
+    )
+
+    assert "complete_evaluation_rule_ids" not in bounded_payload
+    assert complete_payload["complete_evaluation_rule_ids"] == ["REPO-001"]
 
 
 def test_equivalent_evaluation_path_sets_have_identical_evidence(tmp_path):

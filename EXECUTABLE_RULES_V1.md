@@ -228,8 +228,71 @@ standard Dart tool caches. It never follows symlinks or reparse points.
 
 Unsafe containment, ambiguous reparse state, unreadable or invalid UTF-8 source,
 malformed dependency URIs, unsafe `pubspec.yaml`, and unsupported directive
-syntax fail closed. Stage 8A only produces facts: it does not register or enable
-`architecture.dependency_boundary`; that enforcement belongs to Stage 8B.
+syntax fail closed. Fact Providers remain policy-free and cannot decide whether
+one normalized dependency is allowed.
+
+### Architecture dependency boundary checker
+
+Stage 8B registers packaged checker `architecture.dependency_boundary`, version
+`1`. It consumes normalized Fact Provider output and does not parse Dart or
+contain language-specific import rules. Its strict parameters are:
+
+```yaml
+provider: dart.imports
+source_paths:
+  - lib/domain/**
+forbidden_target_paths:
+  - lib/presentation/**
+```
+
+Both path lists are non-empty canonical repository-relative anchored POSIX glob
+patterns using the shared Rule scope matcher. Unknown providers, parameters, or
+unsafe patterns are rejected. A violation exists only when a normalized fact has
+`target_kind: project`, its source matches `source_paths`, and its target matches
+`forbidden_target_paths`. External packages and Dart SDK dependencies do not
+violate project path boundaries. Every normalized dependency directive emitted
+by the selected provider participates.
+
+Project-wide validation evaluates the provider project-wide. A bounded
+Evaluation Context normally passes its exact changed paths to the provider, so
+an unrelated change does not scan existing source files. Provider-owned global
+input metadata can invalidate that bounded universe: for `dart.imports`, a
+`pubspec.yaml` change deliberately causes project-wide provider evaluation
+because package ownership may change.
+
+Governance inputs that can change architecture meaning also invalidate bounded
+dependency evaluation. A bounded change to either
+`.project/policies/rules.yaml` or
+`.project/policies/rule_exceptions.yaml` causes project-wide provider
+evaluation so a new or changed boundary, waiver, revocation, or exception
+definition cannot falsely pass without inspecting existing source.
+
+Temporary architecture exceptions are also time-dependent even when no
+governance file changes. When an active temporary exception targets an
+`architecture.dependency_boundary` Rule, validation records that Rule ID in
+`complete_evaluation_rule_ids`. The real bounded `evaluation_paths` remain
+unchanged, but the Rule Engine derives a project-wide checker context for that
+specific Rule so expiry cannot hide an existing raw architecture failure.
+
+Result evidence records `provider_evaluation_mode` as `bounded`,
+`project_wide`, or `project_wide_invalidation`.
+
+In v1, dependency-boundary Rules must not declare Rule-level `scope`. The Rule
+registry rejects that unsafe combination because Stage 7 applicability filtering
+would run before provider invalidation. `verification.parameters.source_paths`
+is the only dependency-source selector.
+
+Violations record normalized source path, directive, target path, and original
+target URI in deterministic order. Governed path-scoped exceptions apply to the
+violating source file only, because that file owns the dependency declaration.
+Provider identity/version, normalized fact-set hash, inspected sources,
+evaluation mode, selectors, and complete violations remain bound into normal
+Rule Evidence. A provider or result assurance failure is `ERROR`, never `PASS`.
+
+Stage 8B completes the first language-backed architecture enforcement vertical
+slice through the existing Rule Engine, exception, Evidence, project validation,
+and bounded SYNC validation paths. It does not add a default architecture policy
+to initialized or existing projects.
 
 ## Rule outcomes
 
@@ -338,6 +401,14 @@ whole path must be consumed. Thus `docs/*.md` excludes nested files while
 matched concrete paths. The canonical bounded path set is bound through the
 Evaluation Context and `evaluation_context_sha256`, so it also changes the
 common Rule Evidence fingerprint.
+
+Stage 8B extends the Evaluation Context with
+`complete_evaluation_rule_ids`, a sorted deduplicated tuple of Rules that must
+receive complete checker evaluation despite a bounded changed-path set. This
+obligation is distinct from `evaluation_paths`: it does not rewrite what
+actually changed. When non-empty it is also bound into
+`evaluation_context_sha256`, so adding or removing a complete-evaluation
+obligation necessarily changes the common Rule Evidence fingerprint.
 
 Stage 7 does not introduce Task Specifications, task lifecycle or IDs, Task
 Obligations, risk classification, or a Risk Engine. Those remain future stages.

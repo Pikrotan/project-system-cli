@@ -1,7 +1,7 @@
 """Pure Executable Rules v1 Stage 2A evaluation core."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,7 @@ class RuleEvaluationContext:
     objects: Mapping[str, object]
     object_layer_complete: bool = False
     evaluation_paths: tuple[str, ...] | None = None
+    complete_evaluation_rule_ids: tuple[str, ...] = ()
 
     def __post_init__(self):
         object.__setattr__(self, "project_root", Path(self.project_root))
@@ -31,6 +32,19 @@ class RuleEvaluationContext:
             "evaluation_paths",
             canonicalize_evaluation_paths(self.evaluation_paths),
         )
+        rule_ids = self.complete_evaluation_rule_ids
+        if (
+            not isinstance(rule_ids, tuple)
+            or not all(isinstance(rule_id, str) and rule_id for rule_id in rule_ids)
+        ):
+            raise TypeError(
+                "complete_evaluation_rule_ids must be a tuple of non-empty rule IDs"
+            )
+        normalized_rule_ids = tuple(sorted(set(rule_ids)))
+        if rule_ids != normalized_rule_ids:
+            raise ValueError(
+                "complete_evaluation_rule_ids must be sorted and deduplicated"
+            )
 
 
 @dataclass(frozen=True)
@@ -91,6 +105,25 @@ def evaluate_rules(rules_registry, context):
     rules = rules_registry.get("rules")
     if not isinstance(rules, Mapping):
         raise ValueError("rules registry must contain a rules mapping")
+
+    for rule_id in context.complete_evaluation_rule_ids:
+        rule = rules.get(rule_id)
+        if not isinstance(rule, Mapping):
+            raise ValueError(
+                f"complete evaluation references unknown rule_id: {rule_id}"
+            )
+        if rule.get("status") != "active":
+            raise ValueError(
+                f"complete evaluation references non-active rule_id: {rule_id}"
+            )
+        verification = rule.get("verification")
+        if (
+            not isinstance(verification, Mapping)
+            or verification.get("method") != "deterministic"
+        ):
+            raise ValueError(
+                f"complete evaluation requires deterministic rule_id: {rule_id}"
+            )
 
     results = []
     for rule_id in sorted(rules):
@@ -196,10 +229,15 @@ def evaluate_rules(rules_registry, context):
             )
             continue
 
+        checker_context = (
+            replace(context, evaluation_paths=None)
+            if rule_id in context.complete_evaluation_rule_ids
+            else context
+        )
         try:
             outcome = rule_checkers.evaluate_checker(
                 checker,
-                context,
+                checker_context,
                 verification.get("parameters"),
             )
         except Exception as exc:

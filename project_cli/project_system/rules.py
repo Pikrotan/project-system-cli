@@ -207,6 +207,15 @@ def _rule_semantic_messages(registry):
 
         scope = rule.get("scope")
         if scope is not None:
+            if (
+                verification["method"] == "deterministic"
+                and verification.get("checker")
+                == "architecture.dependency_boundary"
+            ):
+                messages.append(
+                    f"rules.{rule_id}.scope: architecture.dependency_boundary "
+                    "must use verification.parameters.source_paths instead of Rule scope"
+                )
             for path in scope["paths"]:
                 if not _safe_scope_path(path):
                     messages.append(

@@ -239,3 +239,41 @@ def test_valid_checker_parameters_are_accepted(tmp_path):
     )
 
     assert not blocking_messages(root)
+
+
+def test_dependency_boundary_rule_scope_is_rejected(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    selected = deterministic_rule(
+        "architecture.dependency_boundary",
+        {
+            "provider": "dart.imports",
+            "source_paths": ["lib/domain/**"],
+            "forbidden_target_paths": ["lib/presentation/**"],
+        },
+    )
+    selected["scope"] = {"paths": ["lib/domain/**"]}
+    write_rules(root, {"ARCH-001": selected})
+
+    assert any(
+        "must use verification.parameters.source_paths" in message
+        for message in blocking_messages(root)
+    )
+
+
+def test_unscoped_dependency_boundary_rule_is_valid(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+    write_rules(
+        root,
+        {
+            "ARCH-001": deterministic_rule(
+                "architecture.dependency_boundary",
+                {
+                    "provider": "dart.imports",
+                    "source_paths": ["lib/domain/**"],
+                    "forbidden_target_paths": ["lib/presentation/**"],
+                },
+            )
+        },
+    )
+
+    assert not blocking_messages(root)

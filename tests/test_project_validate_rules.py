@@ -1289,3 +1289,44 @@ def test_sync_temporary_architecture_exception_rechecks_project_for_time_expiry(
         "lib/domain/legacy.dart"
     ]
     assert rule_issues(at_expiry, "ARCH-001")[0][0] == "BLOCKING"
+
+
+
+def test_temporary_code_verification_exception_forces_complete_evaluation():
+    from types import SimpleNamespace
+
+    from project_system import validation as validation_module
+
+    layer = SimpleNamespace(
+        rules_registry={
+            "rules": {
+                "CODE-001": {
+                    "status": "active",
+                    "exception_policy": "decision_required",
+                    "verification": {
+                        "method": "deterministic",
+                        "checker": "code.verification",
+                        "parameters": {
+                            "adapter": "dart.analyze",
+                        },
+                    },
+                },
+            },
+        },
+        exception_registry={
+            "exceptions": {
+                "EXC-20260930-code0001": {
+                    "rule_id": "CODE-001",
+                    "state": "active",
+                    "mode": "temporary",
+                },
+            },
+        },
+    )
+
+    assert (
+        validation_module._temporary_exception_complete_evaluation_rule_ids(
+            layer
+        )
+        == ("CODE-001",)
+    )

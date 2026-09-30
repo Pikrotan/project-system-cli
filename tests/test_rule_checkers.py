@@ -38,6 +38,7 @@ def object_record(object_id, object_type="feature", **fields):
 def test_checker_registry_contains_exact_v1_catalog():
     assert set(CHECKER_REGISTRY) == {
         "architecture.dependency_boundary",
+        "code.verification",
         "repository.required_path",
         "repository.forbidden_path",
         "knowledge.required_field",
@@ -496,3 +497,359 @@ def test_required_field_explicitly_incomplete_object_layer_is_error(tmp_path):
     )
     assert outcome.raw_status == "ERROR"
     assert "incomplete" in outcome.failure_reason
+
+
+
+def _verification_adapter_result(
+    *,
+    status="PASS",
+    evaluation_mode="project_wide",
+    findings=(),
+    exit_code=0,
+):
+    from dataclasses import replace
+
+    from project_system.verification_adapters import (
+        VerificationAdapterResult,
+        verification_result_sha256,
+    )
+
+    base = VerificationAdapterResult(
+        adapter_id="dart.analyze",
+        adapter_version="1",
+        tool_name="dart",
+        tool_version="3.13.1",
+        evaluation_mode=evaluation_mode,
+        verification_status=status,
+        inspected_paths=(),
+        findings=tuple(findings),
+        exit_code=exit_code,
+        stdout_sha256="a" * 64,
+        stderr_sha256="b" * 64,
+        result_sha256="0" * 64,
+    )
+    return replace(
+        base,
+        result_sha256=verification_result_sha256(base),
+    )
+
+
+def _verification_finding(*, path="lib/main.dart"):
+    from project_system.verification_adapters import VerificationFinding
+
+    return VerificationFinding(
+        path=path,
+        line=5 if path is not None else None,
+        column=7 if path is not None else None,
+        severity="ERROR",
+        code="UNDEFINED_IDENTIFIER",
+        message="Undefined name 'foo'.",
+    )
+
+
+def test_code_verification_checker_is_allowlisted_and_validates_adapter():
+    from project_system import rule_checkers
+
+    assert "code.verification" in rule_checkers.CHECKER_REGISTRY
+
+    assert rule_checkers.checker_contract_messages(
+        "code.verification",
+        None,
+    ) == ("missing required parameter: adapter",)
+
+    assert rule_checkers.checker_contract_messages(
+        "code.verification",
+        {"adapter": "unknown.adapter"},
+    ) == ("unknown Verification Adapter: 'unknown.adapter'",)
+
+    assert rule_checkers.checker_contract_messages(
+        "code.verification",
+        {"adapter": "dart.analyze", "command": "dart analyze"},
+    ) == ("unknown parameter: command",)
+
+    assert rule_checkers.checker_contract_messages(
+        "code.verification",
+        {"adapter": "dart.analyze"},
+    ) == ()
+
+
+def test_code_verification_passes_scope_and_preserves_adapter_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    from project_system import rule_checkers, verification_adapters
+    from project_system.rule_engine import RuleEvaluationContext
+    from project_system.rules import RULES_REGISTRY, RULE_EXCEPTIONS_REGISTRY
+
+    calls = []
+    adapter_result = _verification_adapter_result(status="PASS")
+
+    def fake_evaluate(
+        adapter_id,
+        project_root,
+        *,
+        evaluation_paths=None,
+        additional_global_input_patterns=(),
+    ):
+        calls.append(
+            (
+                adapter_id,
+                project_root,
+                evaluation_paths,
+                tuple(additional_global_input_patterns),
+            )
+        )
+        return adapter_result
+
+    monkeypatch.setattr(
+        verification_adapters,
+        "evaluate_verification_adapter",
+        fake_evaluate,
+    )
+
+    context = RuleEvaluationContext(
+        project_root=tmp_path,
+        checkpoint="project_validate",
+        objects={},
+        object_layer_complete=True,
+        evaluation_paths=("lib/main.dart",),
+    )
+
+    outcome = rule_checkers.evaluate_checker(
+        "code.verification",
+        context,
+        {"adapter": "dart.analyze"},
+    )
+
+    assert outcome.raw_status == "PASS"
+    assert outcome.failure_reason is None
+    assert outcome.details["adapter_id"] == "dart.analyze"
+    assert outcome.details["adapter_version"] == "1"
+    assert outcome.details["verification_status"] == "PASS"
+    assert outcome.details["result_sha256"] == adapter_result.result_sha256
+    assert outcome.details["findings"] == []
+
+    assert calls == [
+        (
+            "dart.analyze",
+            tmp_path,
+            ("lib/main.dart",),
+            (
+                RULES_REGISTRY.as_posix(),
+                RULE_EXCEPTIONS_REGISTRY.as_posix(),
+            ),
+        )
+    ]
+
+
+def test_code_verification_maps_not_applicable_without_false_pass(
+    tmp_path,
+    monkeypatch,
+):
+    from project_system import rule_checkers, verification_adapters
+    from project_system.rule_engine import RuleEvaluationContext
+
+    adapter_result = _verification_adapter_result(
+        status="NOT_APPLICABLE",
+        evaluation_mode="bounded",
+    )
+
+    monkeypatch.setattr(
+        verification_adapters,
+        "evaluate_verification_adapter",
+        lambda *args, **kwargs: adapter_result,
+    )
+
+    outcome = rule_checkers.evaluate_checker(
+        "code.verification",
+        RuleEvaluationContext(
+            project_root=tmp_path,
+            checkpoint="project_validate",
+            objects={},
+            object_layer_complete=True,
+            evaluation_paths=("README.md",),
+        ),
+        {"adapter": "dart.analyze"},
+    )
+
+    assert outcome.raw_status == "NOT_APPLICABLE"
+    assert outcome.failure_reason is None
+    assert outcome.details["verification_status"] == "NOT_APPLICABLE"
+
+
+def test_code_verification_maps_failure_with_concrete_finding_paths(
+    tmp_path,
+    monkeypatch,
+):
+    from project_system import rule_checkers, verification_adapters
+    from project_system.rule_engine import RuleEvaluationContext
+
+    finding = _verification_finding()
+    adapter_result = _verification_adapter_result(
+        status="FAIL",
+        findings=(finding,),
+        exit_code=3,
+    )
+
+    monkeypatch.setattr(
+        verification_adapters,
+        "evaluate_verification_adapter",
+        lambda *args, **kwargs: adapter_result,
+    )
+
+    outcome = rule_checkers.evaluate_checker(
+        "code.verification",
+        RuleEvaluationContext(
+            project_root=tmp_path,
+            checkpoint="project_validate",
+            objects={},
+            object_layer_complete=True,
+        ),
+        {"adapter": "dart.analyze"},
+    )
+
+    assert outcome.raw_status == "FAIL"
+    assert outcome.failure_reason
+    assert outcome.details["verification_status"] == "FAIL"
+    assert outcome.details["findings"][0]["path"] == "lib/main.dart"
+
+
+def test_code_verification_fails_closed_when_failure_has_no_concrete_path(
+    tmp_path,
+    monkeypatch,
+):
+    from project_system import rule_checkers, verification_adapters
+    from project_system.rule_engine import RuleEvaluationContext
+
+    finding = _verification_finding(path=None)
+    adapter_result = _verification_adapter_result(
+        status="FAIL",
+        findings=(finding,),
+        exit_code=3,
+    )
+
+    monkeypatch.setattr(
+        verification_adapters,
+        "evaluate_verification_adapter",
+        lambda *args, **kwargs: adapter_result,
+    )
+
+    outcome = rule_checkers.evaluate_checker(
+        "code.verification",
+        RuleEvaluationContext(
+            project_root=tmp_path,
+            checkpoint="project_validate",
+            objects={},
+            object_layer_complete=True,
+        ),
+        {"adapter": "dart.analyze"},
+    )
+
+    assert outcome.raw_status == "ERROR"
+    assert outcome.failure_reason
+    assert "concrete finding paths" in outcome.failure_reason
+
+
+def test_code_verification_sanitizes_adapter_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from project_system import rule_checkers, verification_adapters
+    from project_system.rule_engine import RuleEvaluationContext
+    from project_system.verification_adapters import VerificationAdapterError
+
+    def fail(*args, **kwargs):
+        raise VerificationAdapterError(
+            r"secret path C:\private\source.dart"
+        )
+
+    monkeypatch.setattr(
+        verification_adapters,
+        "evaluate_verification_adapter",
+        fail,
+    )
+
+    outcome = rule_checkers.evaluate_checker(
+        "code.verification",
+        RuleEvaluationContext(
+            project_root=tmp_path,
+            checkpoint="project_validate",
+            objects={},
+            object_layer_complete=True,
+        ),
+        {"adapter": "dart.analyze"},
+    )
+
+    assert outcome.raw_status == "ERROR"
+    assert outcome.failure_reason
+    assert "secret" not in outcome.failure_reason
+    assert "private" not in outcome.failure_reason
+
+
+
+def test_code_verification_outcome_rejects_tampered_result_hash():
+    from project_system import rule_checkers
+
+    finding = _verification_finding()
+    adapter_result = _verification_adapter_result(
+        status="FAIL",
+        findings=(finding,),
+        exit_code=3,
+    )
+
+    details = {
+        "adapter_id": adapter_result.adapter_id,
+        "adapter_version": adapter_result.adapter_version,
+        "tool_name": adapter_result.tool_name,
+        "tool_version": adapter_result.tool_version,
+        "evaluation_mode": adapter_result.evaluation_mode,
+        "verification_status": adapter_result.verification_status,
+        "inspected_paths": list(adapter_result.inspected_paths),
+        "findings": [
+            {
+                "path": item.path,
+                "line": item.line,
+                "column": item.column,
+                "severity": item.severity,
+                "code": item.code,
+                "message": item.message,
+            }
+            for item in adapter_result.findings
+        ],
+        "exit_code": adapter_result.exit_code,
+        "stdout_sha256": adapter_result.stdout_sha256,
+        "stderr_sha256": adapter_result.stderr_sha256,
+        "result_sha256": adapter_result.result_sha256,
+    }
+
+    assert rule_checkers.checker_outcome_contract_messages(
+        "code.verification",
+        "FAIL",
+        details,
+        "verification failed",
+        {"adapter": "dart.analyze"},
+    ) == ()
+
+    tampered = dict(details)
+    tampered["findings"] = [
+        dict(item)
+        for item in details["findings"]
+    ]
+    tampered["findings"][0]["message"] = "tampered diagnostic"
+
+    messages = rule_checkers.checker_outcome_contract_messages(
+        "code.verification",
+        "FAIL",
+        tampered,
+        "verification failed",
+        {"adapter": "dart.analyze"},
+    )
+
+    assert any(
+        "result_sha256" in message
+        and (
+            "inconsistent" in message
+            or "mismatch" in message
+        )
+        for message in messages
+    )

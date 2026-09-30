@@ -216,6 +216,16 @@ def _rule_semantic_messages(registry):
                     f"rules.{rule_id}.scope: architecture.dependency_boundary "
                     "must use verification.parameters.source_paths instead of Rule scope"
                 )
+
+            if (
+                verification["method"] == "deterministic"
+                and verification.get("checker") == "code.verification"
+            ):
+                messages.append(
+                    f"rules.{rule_id}.scope: code.verification must not use Rule scope; "
+                    "Verification Adapter applicability is derived from the "
+                    "Evaluation Context"
+                )
             for path in scope["paths"]:
                 if not _safe_scope_path(path):
                     messages.append(

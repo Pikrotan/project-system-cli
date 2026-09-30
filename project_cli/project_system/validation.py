@@ -90,7 +90,7 @@ def _active_rules(layer):
 
 
 def _temporary_exception_complete_evaluation_rule_ids(layer):
-    """Return architecture Rules whose active temporary waiver is time-dependent."""
+    """Return Rules whose active temporary waiver requires complete evaluation."""
     rules_registry = layer.rules_registry
     exception_registry = layer.exception_registry
     if not isinstance(rules_registry, dict) or not isinstance(exception_registry, dict):
@@ -122,7 +122,11 @@ def _temporary_exception_complete_evaluation_rule_ids(layer):
         if (
             isinstance(verification, dict)
             and verification.get("method") == "deterministic"
-            and verification.get("checker") == "architecture.dependency_boundary"
+            and verification.get("checker")
+            in {
+                "architecture.dependency_boundary",
+                "code.verification",
+            }
         ):
             rule_ids.add(rule_id)
 

@@ -36,7 +36,7 @@ class CheckerSpec:
     version: str
     parameter_validator: Callable[[object], tuple[str, ...]]
     implementation: Callable[[object, Mapping[str, object]], CheckerOutcome]
-    outcome_validator: Callable[[str, object, object], tuple[str, ...]] | None = None
+    outcome_validator: Callable[[str, object, object, object], tuple[str, ...]] | None = None
 
 
 class _FilesystemInspectionError(RuntimeError):
@@ -300,7 +300,23 @@ def _canonical_sequence_messages(value, label, *, pattern):
     return messages
 
 
-def _dependency_boundary_outcome_messages(raw_status, details, failure_reason):
+def _dependency_boundary_outcome_messages(
+    raw_status,
+    details,
+    failure_reason,
+    parameters=None,
+):
+    if not isinstance(parameters, Mapping):
+        return (
+            "architecture dependency boundary parameters must be a mapping/object",
+        )
+
+    expected_provider = parameters.get("provider")
+    if not isinstance(expected_provider, str) or not expected_provider:
+        return (
+            "architecture dependency boundary provider parameter is malformed",
+        )
+
     from .fact_providers import FACT_PROVIDER_REGISTRY
 
     if raw_status not in {"PASS", "FAIL"}:
@@ -321,6 +337,11 @@ def _dependency_boundary_outcome_messages(raw_status, details, failure_reason):
     if set(details) != required:
         messages.append("dependency boundary details fields are malformed")
     provider_id = details.get("provider_id")
+    if provider_id != expected_provider:
+        messages.append(
+            "architecture dependency boundary provider_id "
+            "does not match Rule provider parameter"
+        )
     spec = FACT_PROVIDER_REGISTRY.get(provider_id) if isinstance(provider_id, str) else None
     if spec is None:
         messages.append("dependency boundary provider_id is unknown")
@@ -567,8 +588,448 @@ def _required_field(context, parameters):
     return CheckerOutcome("PASS", details)
 
 
+
+def _code_verification_parameter_messages(parameters):
+    from .verification_adapters import VERIFICATION_ADAPTER_REGISTRY
+
+    messages, normalized = _parameter_shape_messages(
+        parameters,
+        required=("adapter",),
+        allowed=("adapter",),
+    )
+    messages = list(messages)
+    if normalized is None:
+        return tuple(messages)
+
+    if "adapter" in normalized:
+        adapter_id = normalized["adapter"]
+        if (
+            not isinstance(adapter_id, str)
+            or adapter_id not in VERIFICATION_ADAPTER_REGISTRY
+        ):
+            messages.append(
+                f"unknown Verification Adapter: {adapter_id!r}"
+            )
+
+    return tuple(messages)
+
+
+def _verification_finding_payload(finding):
+    return {
+        "path": finding.path,
+        "line": finding.line,
+        "column": finding.column,
+        "severity": finding.severity,
+        "code": finding.code,
+        "message": finding.message,
+    }
+
+
+def _verification_result_payload(result):
+    return {
+        "adapter_id": result.adapter_id,
+        "adapter_version": result.adapter_version,
+        "tool_name": result.tool_name,
+        "tool_version": result.tool_version,
+        "evaluation_mode": result.evaluation_mode,
+        "verification_status": result.verification_status,
+        "inspected_paths": list(result.inspected_paths),
+        "findings": [
+            _verification_finding_payload(finding)
+            for finding in result.findings
+        ],
+        "exit_code": result.exit_code,
+        "stdout_sha256": result.stdout_sha256,
+        "stderr_sha256": result.stderr_sha256,
+        "result_sha256": result.result_sha256,
+    }
+
+
+def _code_verification(context, parameters):
+    from .rules import RULES_REGISTRY, RULE_EXCEPTIONS_REGISTRY
+    from .verification_adapters import (
+        VERIFICATION_ADAPTER_REGISTRY,
+        VerificationAdapterError,
+        evaluate_verification_adapter,
+    )
+
+    adapter_id = parameters["adapter"]
+    spec = VERIFICATION_ADAPTER_REGISTRY[adapter_id]
+
+    try:
+        result = evaluate_verification_adapter(
+            adapter_id,
+            context.project_root,
+            evaluation_paths=context.evaluation_paths,
+            additional_global_input_patterns=(
+                RULES_REGISTRY.as_posix(),
+                RULE_EXCEPTIONS_REGISTRY.as_posix(),
+            ),
+        )
+    except VerificationAdapterError:
+        return CheckerOutcome(
+            "ERROR",
+            {
+                "adapter_id": adapter_id,
+                "adapter_version": spec.version,
+            },
+            f"Verification Adapter {adapter_id!r} could not establish "
+            "a trustworthy verification result",
+        )
+
+    details = _verification_result_payload(result)
+
+    if result.verification_status == "NOT_APPLICABLE":
+        return CheckerOutcome("NOT_APPLICABLE", details)
+
+    if result.verification_status == "PASS":
+        return CheckerOutcome("PASS", details)
+
+    if result.verification_status == "FAIL":
+        concrete_paths = tuple(
+            sorted(
+                {
+                    finding.path
+                    for finding in result.findings
+                    if finding.path is not None
+                }
+            )
+        )
+        if (
+            not concrete_paths
+            or any(finding.path is None for finding in result.findings)
+        ):
+            return CheckerOutcome(
+                "ERROR",
+                details,
+                "Verification Adapter reported FAIL without complete "
+                "concrete finding paths",
+            )
+
+        return CheckerOutcome(
+            "FAIL",
+            details,
+            f"Verification Adapter {adapter_id!r} reported verification failure",
+        )
+
+    return CheckerOutcome(
+        "ERROR",
+        details,
+        "Verification Adapter returned an unsupported semantic status",
+    )
+
+
+def _code_verification_outcome_messages(
+    raw_status,
+    details,
+    failure_reason,
+    parameters=None,
+):
+    from .verification_adapters import (
+        VERIFICATION_ADAPTER_REGISTRY,
+        VerificationAdapterError,
+        VerificationAdapterResult,
+        VerificationFinding,
+        verification_result_sha256,
+    )
+
+    if raw_status not in {"PASS", "FAIL", "NOT_APPLICABLE"}:
+        return ()
+
+    if not isinstance(details, Mapping):
+        return ("code verification details must be a mapping/object",)
+
+    if not isinstance(parameters, Mapping):
+        return ("code verification parameters must be a mapping/object",)
+
+    expected_adapter = parameters.get("adapter")
+    if not isinstance(expected_adapter, str) or not expected_adapter:
+        return ("code verification adapter parameter is malformed",)
+
+    required = {
+        "adapter_id",
+        "adapter_version",
+        "tool_name",
+        "tool_version",
+        "evaluation_mode",
+        "verification_status",
+        "inspected_paths",
+        "findings",
+        "exit_code",
+        "stdout_sha256",
+        "stderr_sha256",
+        "result_sha256",
+    }
+
+    messages = []
+
+    if set(details) != required:
+        messages.append("code verification details fields are malformed")
+
+    adapter_id = details.get("adapter_id")
+    if adapter_id != expected_adapter:
+        messages.append(
+            "code verification adapter_id does not match Rule adapter parameter"
+        )
+    spec = (
+        VERIFICATION_ADAPTER_REGISTRY.get(adapter_id)
+        if isinstance(adapter_id, str)
+        else None
+    )
+    if spec is None:
+        messages.append("code verification adapter_id is unknown")
+    elif details.get("adapter_version") != spec.version:
+        messages.append(
+            "code verification adapter_version is inconsistent"
+        )
+
+    for name in ("tool_name", "tool_version"):
+        value = details.get(name)
+        if not isinstance(value, str) or not value:
+            messages.append(
+                f"code verification {name} must be a non-empty string"
+            )
+
+    if details.get("evaluation_mode") not in {
+        "bounded",
+        "project_wide",
+        "project_wide_invalidation",
+    }:
+        messages.append(
+            "code verification evaluation_mode is malformed"
+        )
+
+    if details.get("verification_status") != raw_status:
+        messages.append(
+            "code verification semantic status does not match raw status"
+        )
+
+    inspected = details.get("inspected_paths")
+    if not isinstance(inspected, list):
+        messages.append(
+            "code verification inspected_paths must be a list"
+        )
+    else:
+        normalized = []
+        for index, value in enumerate(inspected):
+            try:
+                normalized.append(
+                    canonical_rule_path(
+                        value,
+                        f"code verification inspected_paths[{index}]",
+                        pattern=False,
+                    )
+                )
+            except RuleScopeError as exc:
+                messages.append(str(exc))
+        if inspected != sorted(set(normalized)):
+            messages.append(
+                "code verification inspected_paths must be sorted "
+                "and deduplicated"
+            )
+
+    findings = details.get("findings")
+    normalized_findings = []
+    if not isinstance(findings, list):
+        messages.append("code verification findings must be a list")
+        findings = []
+
+    finding_fields = {
+        "path",
+        "line",
+        "column",
+        "severity",
+        "code",
+        "message",
+    }
+
+    for index, finding in enumerate(findings):
+        label = f"code verification findings[{index}]"
+
+        if not isinstance(finding, Mapping):
+            messages.append(f"{label} must be a mapping/object")
+            continue
+
+        if set(finding) != finding_fields:
+            messages.append(f"{label} fields are malformed")
+            continue
+
+        finding_path = finding.get("path")
+        if finding_path is not None:
+            try:
+                finding_path = canonical_rule_path(
+                    finding_path,
+                    f"{label}.path",
+                    pattern=False,
+                )
+            except RuleScopeError as exc:
+                messages.append(str(exc))
+                continue
+
+        line = finding.get("line")
+        column = finding.get("column")
+        if line is not None and (
+            type(line) is not int or line <= 0
+        ):
+            messages.append(
+                f"{label}.line must be a positive integer or null"
+            )
+        if column is not None and (
+            type(column) is not int or column <= 0
+        ):
+            messages.append(
+                f"{label}.column must be a positive integer or null"
+            )
+        if finding_path is None and (
+            line is not None or column is not None
+        ):
+            messages.append(
+                f"{label} cannot contain line/column without path"
+            )
+
+        severity = finding.get("severity")
+        if severity not in {"ERROR", "WARNING", "INFO"}:
+            messages.append(f"{label}.severity is malformed")
+
+        for name in ("code", "message"):
+            value = finding.get(name)
+            if not isinstance(value, str) or not value:
+                messages.append(
+                    f"{label}.{name} must be a non-empty string"
+                )
+
+        normalized_findings.append(
+            (
+                finding_path,
+                line,
+                column,
+                severity,
+                finding.get("code"),
+                finding.get("message"),
+            )
+        )
+
+    if normalized_findings != sorted(set(normalized_findings)):
+        messages.append(
+            "code verification findings must be sorted and deduplicated"
+        )
+
+    exit_code = details.get("exit_code")
+    if type(exit_code) is not int or exit_code < 0:
+        messages.append(
+            "code verification exit_code must be a non-negative integer"
+        )
+
+    for name in (
+        "stdout_sha256",
+        "stderr_sha256",
+        "result_sha256",
+    ):
+        value = details.get(name)
+        if (
+            not isinstance(value, str)
+            or not _SHA256_RE.fullmatch(value)
+        ):
+            messages.append(
+                f"code verification {name} is malformed"
+            )
+
+    hash_contract_shape_valid = (
+        set(details) == required
+        and isinstance(inspected, list)
+        and isinstance(findings, list)
+        and all(
+            isinstance(finding, Mapping)
+            and set(finding) == finding_fields
+            for finding in findings
+        )
+    )
+
+    if hash_contract_shape_valid:
+        try:
+            reconstructed = VerificationAdapterResult(
+                adapter_id=details["adapter_id"],
+                adapter_version=details["adapter_version"],
+                tool_name=details["tool_name"],
+                tool_version=details["tool_version"],
+                evaluation_mode=details["evaluation_mode"],
+                verification_status=details["verification_status"],
+                inspected_paths=tuple(details["inspected_paths"]),
+                findings=tuple(
+                    VerificationFinding(
+                        path=finding["path"],
+                        line=finding["line"],
+                        column=finding["column"],
+                        severity=finding["severity"],
+                        code=finding["code"],
+                        message=finding["message"],
+                    )
+                    for finding in details["findings"]
+                ),
+                exit_code=details["exit_code"],
+                stdout_sha256=details["stdout_sha256"],
+                stderr_sha256=details["stderr_sha256"],
+                result_sha256=details["result_sha256"],
+            )
+            expected_result_sha256 = verification_result_sha256(
+                reconstructed
+            )
+        except (
+            VerificationAdapterError,
+            TypeError,
+            ValueError,
+        ):
+            expected_result_sha256 = None
+
+        if (
+            expected_result_sha256 is not None
+            and details.get("result_sha256")
+            != expected_result_sha256
+        ):
+            messages.append(
+                "code verification result_sha256 is inconsistent"
+            )
+
+    if raw_status == "FAIL":
+        if not findings:
+            messages.append(
+                "code verification FAIL must contain findings"
+            )
+        elif any(
+            isinstance(finding, Mapping)
+            and finding.get("path") is None
+            for finding in findings
+        ):
+            messages.append(
+                "code verification FAIL requires concrete finding paths"
+            )
+
+    if raw_status in {"PASS", "NOT_APPLICABLE"}:
+        if failure_reason is not None:
+            messages.append(
+                f"code verification {raw_status} must not have "
+                "a failure reason"
+            )
+
+    if raw_status == "FAIL" and (
+        not isinstance(failure_reason, str)
+        or not failure_reason
+    ):
+        messages.append(
+            "code verification FAIL requires a failure reason"
+        )
+
+    return tuple(messages)
+
 CHECKER_REGISTRY = MappingProxyType(
     {
+        "code.verification": CheckerSpec(
+            "code.verification",
+            CHECKER_VERSION,
+            _code_verification_parameter_messages,
+            _code_verification,
+            _code_verification_outcome_messages,
+        ),
         "architecture.dependency_boundary": CheckerSpec(
             "architecture.dependency_boundary",
             CHECKER_VERSION,
@@ -610,11 +1071,17 @@ def checker_outcome_contract_messages(
     raw_status,
     details,
     failure_reason,
+    parameters=None,
 ):
     spec = CHECKER_REGISTRY.get(checker_id)
     if spec is None or spec.outcome_validator is None:
         return ()
-    return spec.outcome_validator(raw_status, details, failure_reason)
+    return spec.outcome_validator(
+        raw_status,
+        details,
+        failure_reason,
+        parameters,
+    )
 
 
 def evaluate_checker(checker_id, context, parameters):
@@ -649,6 +1116,8 @@ def evaluate_checker(checker_id, context, parameters):
         outcome.raw_status,
         outcome.details,
         outcome.failure_reason,
+
+        parameters,
     )
     if messages:
         return CheckerOutcome(

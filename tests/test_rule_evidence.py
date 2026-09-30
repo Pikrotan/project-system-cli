@@ -204,6 +204,61 @@ def test_architecture_evidence_binds_provider_identity_and_dependency_hash(tmp_p
     assert safe.evidence_fingerprint != forbidden.evidence_fingerprint
 
 
+def test_evidence_rejects_architecture_result_from_different_provider(
+    tmp_path,
+    monkeypatch,
+):
+    from dataclasses import replace
+    from types import MappingProxyType
+
+    from project_system import fact_providers as provider_module
+    from project_system import rule_checkers as checker_module
+
+    registry = rules_registry({"ARCH-001": architecture_rule()})
+    selected_context = context(tmp_path)
+    _write_dart(tmp_path, "import '../core/a.dart';\n")
+
+    raw = evaluate_rules(registry, selected_context)[0]
+    assert raw.raw_status == "PASS"
+    assert raw.details["provider_id"] == "dart.imports"
+
+    original_spec = provider_module.FACT_PROVIDER_REGISTRY["dart.imports"]
+    other_spec = replace(
+        original_spec,
+        provider_id="other.imports",
+    )
+    expanded_registry = MappingProxyType(
+        {
+            **provider_module.FACT_PROVIDER_REGISTRY,
+            "other.imports": other_spec,
+        }
+    )
+
+    monkeypatch.setattr(
+        provider_module,
+        "FACT_PROVIDER_REGISTRY",
+        expanded_registry,
+    )
+    if hasattr(checker_module, "FACT_PROVIDER_REGISTRY"):
+        monkeypatch.setattr(
+            checker_module,
+            "FACT_PROVIDER_REGISTRY",
+            expanded_registry,
+        )
+
+    forged_details = dict(raw.details)
+    forged_details["provider_id"] = "other.imports"
+    forged = replace(raw, details=forged_details)
+
+    with pytest.raises(RuleEvidenceError):
+        build(
+            tmp_path,
+            registry=registry,
+            ctx=selected_context,
+            results=[forged],
+        )
+
+
 def test_evidence_rejects_forged_architecture_pass_details(tmp_path):
     registry = rules_registry({"ARCH-001": architecture_rule()})
     forged = result(
@@ -1209,5 +1264,239 @@ def test_evidence_rejects_failure_reason_for_scope_non_intersection(tmp_path):
             tmp_path,
             registry=scoped_registry,
             ctx=scoped_context,
+            results=[forged],
+        )
+
+
+
+def test_code_verification_flows_from_rule_engine_into_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    from dataclasses import replace
+
+    from project_system import verification_adapters
+    from project_system.rule_engine import evaluate_rules
+    from project_system.verification_adapters import (
+        VerificationAdapterResult,
+        VerificationFinding,
+        verification_result_sha256,
+    )
+
+    selected_rule = rule(
+        checker="code.verification",
+        exception_policy="forbidden",
+    )
+    selected_rule["verification"]["parameters"] = {
+        "adapter": "dart.analyze",
+    }
+
+    registry = rules_registry(
+        {
+            "CODE-001": selected_rule,
+        }
+    )
+    ctx = context(tmp_path)
+
+    finding = VerificationFinding(
+        path="lib/main.dart",
+        line=5,
+        column=7,
+        severity="ERROR",
+        code="UNDEFINED_IDENTIFIER",
+        message="Undefined name 'foo'.",
+    )
+
+    base = VerificationAdapterResult(
+        adapter_id="dart.analyze",
+        adapter_version="1",
+        tool_name="dart",
+        tool_version="3.13.1",
+        evaluation_mode="project_wide",
+        verification_status="FAIL",
+        inspected_paths=(),
+        findings=(finding,),
+        exit_code=3,
+        stdout_sha256="a" * 64,
+        stderr_sha256="b" * 64,
+        result_sha256="0" * 64,
+    )
+    adapter_result = replace(
+        base,
+        result_sha256=verification_result_sha256(base),
+    )
+
+    calls = []
+
+    def fake_evaluate(
+        adapter_id,
+        project_root,
+        *,
+        evaluation_paths=None,
+        additional_global_input_patterns=(),
+    ):
+        calls.append(
+            (
+                adapter_id,
+                project_root,
+                evaluation_paths,
+                tuple(additional_global_input_patterns),
+            )
+        )
+        return adapter_result
+
+    monkeypatch.setattr(
+        verification_adapters,
+        "evaluate_verification_adapter",
+        fake_evaluate,
+    )
+
+    raw_results = evaluate_rules(registry, ctx)
+
+    assert len(raw_results) == 1
+    raw = raw_results[0]
+    assert raw.rule_id == "CODE-001"
+    assert raw.checker == "code.verification"
+    assert raw.checker_version == "1"
+    assert raw.raw_status == "FAIL"
+    assert raw.details["adapter_id"] == "dart.analyze"
+    assert raw.details["verification_status"] == "FAIL"
+    assert raw.details["result_sha256"] == adapter_result.result_sha256
+    assert raw.details["findings"] == [
+        {
+            "path": "lib/main.dart",
+            "line": 5,
+            "column": 7,
+            "severity": "ERROR",
+            "code": "UNDEFINED_IDENTIFIER",
+            "message": "Undefined name 'foo'.",
+        }
+    ]
+
+    evidence = build(
+        tmp_path,
+        registry=registry,
+        ctx=ctx,
+        results=raw_results,
+    )
+
+    assert len(evidence.results) == 1
+    item = evidence.results[0]
+
+    assert item.rule_id == "CODE-001"
+    assert item.checker == "code.verification"
+    assert item.checker_version == "1"
+    assert item.raw_status == "FAIL"
+    assert item.effective_status == "FAIL"
+    assert item.exception_id is None
+
+    assert item.details["adapter_id"] == "dart.analyze"
+    assert item.details["adapter_version"] == "1"
+    assert item.details["tool_name"] == "dart"
+    assert item.details["tool_version"] == "3.13.1"
+    assert item.details["evaluation_mode"] == "project_wide"
+    assert item.details["verification_status"] == "FAIL"
+    assert item.details["exit_code"] == 3
+    assert item.details["result_sha256"] == adapter_result.result_sha256
+    assert item.details["findings"][0]["path"] == "lib/main.dart"
+    assert item.details["findings"][0]["code"] == "UNDEFINED_IDENTIFIER"
+
+    assert len(calls) == 1
+    assert calls[0][0] == "dart.analyze"
+    assert calls[0][1] == tmp_path
+    assert calls[0][2] is None
+
+
+
+def test_evidence_rejects_code_verification_result_from_different_adapter(
+    tmp_path,
+    monkeypatch,
+):
+    from dataclasses import replace
+
+    from project_system import verification_adapters
+    from project_system.rule_evidence import RuleEvidenceError
+    from project_system.verification_adapters import (
+        VerificationAdapterResult,
+        VerificationAdapterSpec,
+        verification_result_sha256,
+    )
+
+    expanded_registry = dict(
+        verification_adapters.VERIFICATION_ADAPTER_REGISTRY
+    )
+    expanded_registry["other.verify"] = VerificationAdapterSpec(
+        adapter_id="other.verify",
+        version="1",
+        implementation=lambda root, paths, mode: None,
+        executes_project_code=False,
+    )
+
+    monkeypatch.setattr(
+        verification_adapters,
+        "VERIFICATION_ADAPTER_REGISTRY",
+        expanded_registry,
+    )
+
+    selected_rule = rule(
+        checker="code.verification",
+        exception_policy="forbidden",
+    )
+    selected_rule["verification"]["parameters"] = {
+        "adapter": "dart.analyze",
+    }
+
+    registry = rules_registry(
+        {
+            "CODE-001": selected_rule,
+        }
+    )
+
+    base = VerificationAdapterResult(
+        adapter_id="other.verify",
+        adapter_version="1",
+        tool_name="other-tool",
+        tool_version="1.0.0",
+        evaluation_mode="project_wide",
+        verification_status="PASS",
+        inspected_paths=(),
+        findings=(),
+        exit_code=0,
+        stdout_sha256="a" * 64,
+        stderr_sha256="b" * 64,
+        result_sha256="0" * 64,
+    )
+    forged_adapter_result = replace(
+        base,
+        result_sha256=verification_result_sha256(base),
+    )
+
+    forged = result(
+        rule_id="CODE-001",
+        checker="code.verification",
+        status="PASS",
+        details={
+            "adapter_id": forged_adapter_result.adapter_id,
+            "adapter_version": forged_adapter_result.adapter_version,
+            "tool_name": forged_adapter_result.tool_name,
+            "tool_version": forged_adapter_result.tool_version,
+            "evaluation_mode": forged_adapter_result.evaluation_mode,
+            "verification_status": forged_adapter_result.verification_status,
+            "inspected_paths": [],
+            "findings": [],
+            "exit_code": forged_adapter_result.exit_code,
+            "stdout_sha256": forged_adapter_result.stdout_sha256,
+            "stderr_sha256": forged_adapter_result.stderr_sha256,
+            "result_sha256": forged_adapter_result.result_sha256,
+        },
+    )
+
+    with pytest.raises(
+        RuleEvidenceError,
+        match="adapter|parameter",
+    ):
+        build(
+            tmp_path,
+            registry=registry,
             results=[forged],
         )

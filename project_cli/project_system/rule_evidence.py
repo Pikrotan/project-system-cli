@@ -427,6 +427,7 @@ def _result_evidence(raw_result, rules, context):
             raw_result.raw_status,
             details,
             raw_result.failure_reason,
+            verification.get("parameters"),
         )
         if outcome_messages:
             raise RuleEvidenceError(

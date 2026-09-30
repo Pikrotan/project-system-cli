@@ -277,3 +277,31 @@ def test_unscoped_dependency_boundary_rule_is_valid(tmp_path):
     )
 
     assert not blocking_messages(root)
+
+
+
+def test_code_verification_rejects_rule_scope(tmp_path):
+    root = init_project("Demo", tmp_path / "demo")
+
+    selected = deterministic_rule(
+        "code.verification",
+        {"adapter": "dart.analyze"},
+    )
+    selected["scope"] = {
+        "paths": ["lib/**"],
+    }
+
+    write_rules(
+        root,
+        {
+            "CODE-001": selected,
+        },
+    )
+
+    messages = blocking_messages(root)
+
+    assert any(
+        "code.verification" in message
+        and "scope" in message.lower()
+        for message in messages
+    )

@@ -159,6 +159,44 @@ def _violation_paths(result, context):
                 )
             paths.append(_object_path(context, object_id, objects[object_id]))
         return tuple(sorted(paths))
+    if result.checker == "code.verification":
+        findings = details.get("findings")
+        if (
+            not isinstance(findings, Sequence)
+            or isinstance(findings, (str, bytes))
+            or not findings
+        ):
+            raise RuleExceptionResolutionError(
+                f"results.{result.rule_id}.details.findings "
+                "must be a non-empty sequence"
+            )
+
+        paths = []
+        for index, finding in enumerate(findings):
+            label = f"results.{result.rule_id}.details.findings[{index}]"
+            item = _mapping(finding, label)
+
+            if "path" not in item:
+                raise RuleExceptionResolutionError(
+                    f"{label}.path is required for exception scope"
+                )
+
+            value = item.get("path")
+            if value is None:
+                raise RuleExceptionResolutionError(
+                    f"{label}.path must be a concrete finding path"
+                )
+
+            paths.append(
+                _canonical_path(
+                    value,
+                    f"{label}.path",
+                    pattern=False,
+                )
+            )
+
+        return tuple(sorted(set(paths)))
+
     if result.checker == "architecture.dependency_boundary":
         violations = details.get("violations")
         if (

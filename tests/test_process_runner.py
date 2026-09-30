@@ -1,4 +1,5 @@
 import subprocess
+import sys
 
 import pytest
 
@@ -168,3 +169,260 @@ def test_every_reachable_git_boundary_uses_central_background_policy(
     assert all(call[0][0] == 'git' for call in calls)
     assert all(call[1]['creationflags'] & NO_WINDOW for call in calls)
     assert all(call[1]['shell'] is False for call in calls)
+
+
+def test_bounded_capture_preserves_completed_process_text_contract():
+    completed = process_runner.run_process(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.stdout.write('hello'); "
+                "sys.stderr.write('warning')"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=5,
+        max_capture_bytes=64,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == "hello"
+    assert completed.stderr == "warning"
+
+
+@pytest.mark.parametrize(
+    ("stream", "program"),
+    [
+        (
+            "stdout",
+            "import sys; sys.stdout.buffer.write(b'x' * 65)",
+        ),
+        (
+            "stderr",
+            "import sys; sys.stderr.buffer.write(b'x' * 65)",
+        ),
+    ],
+)
+def test_bounded_capture_fails_closed_when_stream_exceeds_limit(
+    stream,
+    program,
+):
+    with pytest.raises(
+        process_runner.ProcessOutputLimitExceeded,
+        match=stream,
+    ):
+        process_runner.run_process(
+            [sys.executable, "-c", program],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=5,
+            max_capture_bytes=64,
+        )
+
+
+def test_bounded_capture_limit_is_measured_in_encoded_bytes():
+    completed = process_runner.run_process(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "sys.stdout.buffer.write(bytes.fromhex('e282ac') * 2)"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=5,
+        max_capture_bytes=6,
+    )
+
+    assert completed.stdout == "\u20ac\u20ac"
+
+    with pytest.raises(
+        process_runner.ProcessOutputLimitExceeded,
+        match="stdout",
+    ):
+        process_runner.run_process(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "sys.stdout.buffer.write(bytes.fromhex('e282ac') * 3)"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=5,
+            max_capture_bytes=8,
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0, -1, True, "64"],
+)
+def test_bounded_capture_rejects_invalid_limits(value):
+    with pytest.raises(ValueError, match="max_capture_bytes"):
+        process_runner.run_process(
+            [sys.executable, "-c", "pass"],
+            capture_output=True,
+            check=False,
+            max_capture_bytes=value,
+        )
+
+
+def test_bounded_capture_requires_capture_output():
+    with pytest.raises(ValueError, match="capture_output=True"):
+        process_runner.run_process(
+            [sys.executable, "-c", "pass"],
+            check=False,
+            max_capture_bytes=64,
+        )
+
+
+def test_bounded_capture_timeout_survives_partial_multibyte_output():
+    with pytest.raises(subprocess.TimeoutExpired) as captured:
+        process_runner.run_process(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys, time; "
+                    "sys.stdout.buffer.write(bytes([0xe2])); "
+                    "sys.stdout.buffer.flush(); "
+                    "time.sleep(5)"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=0.1,
+            max_capture_bytes=64,
+        )
+
+    assert captured.value.timeout == 0.1
+    assert captured.value.output == b"\xe2"
+    assert isinstance(captured.value.output, bytes)
+
+
+def test_bounded_capture_reader_thread_join_is_time_bounded(
+    monkeypatch,
+):
+    joins = []
+
+    class FakeProcess:
+        stdout = object()
+        stderr = object()
+        returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.returncode = -9
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            joins.append(timeout)
+            if timeout is None:
+                raise AssertionError(
+                    "reader thread join must be time-bounded"
+                )
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(
+        process_runner.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FakeProcess(),
+    )
+    monkeypatch.setattr(
+        process_runner.threading,
+        "Thread",
+        FakeThread,
+    )
+
+    completed = process_runner.run_process(
+        ["fake"],
+        capture_output=True,
+        check=False,
+        max_capture_bytes=64,
+    )
+
+    assert completed.returncode == 0
+    assert len(joins) == 2
+    assert all(
+        type(timeout) in {int, float} and timeout > 0
+        for timeout in joins
+    )
+
+
+def test_bounded_capture_fails_closed_if_reader_does_not_drain(
+    monkeypatch,
+):
+    class FakeProcess:
+        stdout = object()
+        stderr = object()
+        returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.returncode = -9
+
+    class FakeThread:
+        def __init__(self, *, target, args, daemon):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+
+        def start(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr(
+        process_runner.subprocess,
+        "Popen",
+        lambda *args, **kwargs: FakeProcess(),
+    )
+    monkeypatch.setattr(
+        process_runner.threading,
+        "Thread",
+        FakeThread,
+    )
+
+    with pytest.raises(RuntimeError, match="pipe drain"):
+        process_runner.run_process(
+            ["fake"],
+            capture_output=True,
+            check=False,
+            max_capture_bytes=64,
+        )

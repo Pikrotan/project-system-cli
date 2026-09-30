@@ -577,3 +577,73 @@ def test_absolute_object_path_outside_project_root_fails_closed(tmp_path):
             results=[selected],
             ctx=context(tmp_path, objects=objects),
         )
+
+
+
+def test_code_verification_finding_paths_drive_exception_scope(tmp_path):
+    raw = result(
+        checker="code.verification",
+        details={
+            "findings": [
+                {"path": "lib/a.dart"},
+                {"path": "lib/a.dart"},
+                {"path": "lib/nested/b.dart"},
+            ],
+        },
+    )
+
+    resolved = resolve(
+        tmp_path,
+        rules={
+            "REPO-001": rule(
+                checker="code.verification",
+                policy="decision_required",
+            ),
+        },
+        exceptions={
+            "EXC-20260930-code0001": exception(
+                paths=("lib/**",),
+            ),
+        },
+        results=[raw],
+    )
+
+    assert resolved.applications == (
+        RuleExceptionApplication(
+            "REPO-001",
+            "EXC-20260930-code0001",
+        ),
+    )
+
+
+def test_code_verification_exception_scope_requires_concrete_finding_paths(
+    tmp_path,
+):
+    raw = result(
+        checker="code.verification",
+        details={
+            "findings": [
+                {"path": None},
+            ],
+        },
+    )
+
+    with pytest.raises(
+        RuleExceptionResolutionError,
+        match="finding.*path|concrete",
+    ):
+        resolve(
+            tmp_path,
+            rules={
+                "REPO-001": rule(
+                    checker="code.verification",
+                    policy="decision_required",
+                ),
+            },
+            exceptions={
+                "EXC-20260930-code0001": exception(
+                    paths=("lib/**",),
+                ),
+            },
+            results=[raw],
+        )

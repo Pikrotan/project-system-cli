@@ -54,6 +54,9 @@ class VerificationAdapterResult:
     stdout_sha256: str
     stderr_sha256: str
     result_sha256: str
+    # Opt-in stable semantic binding; raw stdout/stderr remain execution
+    # provenance and are excluded from semantic Rule Evidence in this mode.
+    semantic_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -66,9 +69,10 @@ class VerificationAdapterSpec:
     ]
     global_input_patterns: tuple[str, ...] = ()
     executes_project_code: bool = False
+    uses_semantic_hash: bool = False
 
 
-from . import dart_analyze_adapter
+from . import dart_analyze_adapter, dart_test_adapter
 
 
 VERIFICATION_ADAPTER_REGISTRY = MappingProxyType(
@@ -83,6 +87,14 @@ VERIFICATION_ADAPTER_REGISTRY = MappingProxyType(
                 "**/pubspec.lock",
             ),
             executes_project_code=False,
+        ),
+        "dart.test": VerificationAdapterSpec(
+            adapter_id="dart.test",
+            version="1",
+            implementation=dart_test_adapter.run_dart_test,
+            global_input_patterns=("**",),
+            executes_project_code=True,
+            uses_semantic_hash=True,
         ),
     }
 )
@@ -121,6 +133,11 @@ def _validated_adapter_spec(adapter_id):
     if type(spec.executes_project_code) is not bool:
         raise VerificationAdapterError(
             f"Verification Adapter {adapter_id!r} executes_project_code "
+            "must be a boolean"
+        )
+    if type(spec.uses_semantic_hash) is not bool:
+        raise VerificationAdapterError(
+            f"Verification Adapter {adapter_id!r} uses_semantic_hash "
             "must be a boolean"
         )
     if not isinstance(spec.global_input_patterns, tuple):
@@ -318,6 +335,17 @@ def verification_result_sha256(result):
         "stdout_sha256": result.stdout_sha256,
         "stderr_sha256": result.stderr_sha256,
     }
+    if result.semantic_sha256 is not None:
+        if (
+            not isinstance(result.semantic_sha256, str)
+            or not _SHA256_RE.fullmatch(result.semantic_sha256)
+        ):
+            raise VerificationAdapterError(
+                "Verification Adapter semantic_sha256 is malformed"
+            )
+        payload.pop("stdout_sha256")
+        payload.pop("stderr_sha256")
+        payload["semantic_sha256"] = result.semantic_sha256
 
     encoded = json.dumps(
         payload,
@@ -404,6 +432,10 @@ def validate_verification_adapter_result(
     if result.adapter_version != spec.version:
         raise VerificationAdapterError(
             "Verification Adapter result version is inconsistent"
+        )
+    if spec.uses_semantic_hash != (result.semantic_sha256 is not None):
+        raise VerificationAdapterError(
+            "Verification Adapter semantic hash contract is inconsistent"
         )
 
     for name, value in (

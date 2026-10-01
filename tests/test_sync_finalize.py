@@ -606,6 +606,87 @@ def test_matching_rule_evidence_is_rechecked_and_bound_to_finalization(
     )
 
 
+@pytest.mark.parametrize('inventory_drift', [False, True])
+def test_dart_test_recheck_ignores_transcript_volatility_but_binds_inventory(
+    tmp_path, monkeypatch, inventory_drift,
+):
+    from project_system import dart_test_adapter
+
+    def configure(root, path, object_id):
+        for name in ('first', 'second'):
+            test_path = root / 'test' / f'{name}_test.dart'
+            test_path.parent.mkdir(exist_ok=True)
+            test_path.write_text('void main() {}\n', encoding='utf-8')
+        _write_rule_layer(root, {
+            'TEST-001': {
+                'title': 'Run tests', 'status': 'active', 'category': 'testing',
+                'description': 'Verify the full Dart test suite.',
+                'verification': {'method': 'deterministic', 'checker': 'code.verification',
+                                 'parameters': {'adapter': 'dart.test'}},
+                'enforcement': {'severity': 'BLOCKING',
+                                'checkpoints': ['project_validate', 'sync_verify']},
+                'exception_policy': 'forbidden',
+            },
+        })
+
+    calls = []
+    drift = False
+
+    def run(arguments, **kwargs):
+        from subprocess import CompletedProcess
+
+        calls.append(tuple(arguments))
+        alternate = len(calls) % 2 == 0
+        events = [{'type': 'start', 'protocolVersion': '0.1.1',
+                   'runnerVersion': '1.31.0', 'pid': 1234 + len(calls)},
+                  {'type': 'allSuites', 'count': 2}]
+        suite_order = [('first', 0, 1), ('second', 2, 3)]
+        if alternate:
+            suite_order.reverse()
+        completions = []
+        for name, suite_id, test_id in suite_order:
+            events.extend([
+                {'type': 'suite', 'suite': {'id': suite_id, 'platform': 'vm',
+                                          'path': f'test/{name}_test.dart'}},
+                {'type': 'testStart', 'test': {
+                    'id': test_id, 'name': name + (' changed' if drift else ''),
+                    'suiteID': suite_id, 'groupIDs': [],
+                    'line': None, 'column': None, 'url': None,
+                    'metadata': {'skip': False, 'skipReason': None},
+                }},
+            ])
+            completions.append({'type': 'testDone', 'testID': test_id,
+                                'result': 'success', 'hidden': False, 'skipped': False})
+        events.extend(reversed(completions) if alternate else completions)
+        events.append({'type': 'done', 'success': True})
+        for index, event in enumerate(events):
+            event['time'] = index * len(calls)
+        return CompletedProcess(arguments, 0, '\n'.join(map(json.dumps, events)), '')
+
+    monkeypatch.setattr(dart_test_adapter, 'run_process', run)
+    root, _, _, head, _, pack_path, output, _ = _setup_verified(
+        tmp_path, configure=configure,
+    )
+    verification = json.loads((output / 'verification.json').read_text(encoding='utf-8'))
+    item = verification['rule_evidence_binding']['evidence']['results'][0]
+    assert item['raw_status'] == 'PASS'
+    assert item['details']['evaluation_mode'] == 'project_wide_invalidation'
+    drift = inventory_drift
+    before = len(calls)
+    if inventory_drift:
+        with pytest.raises(SyncFinalizeIntegrityError, match='Rule Evidence|sync verify again'):
+            finalize_sync(root, pack_path)
+    else:
+        _, report = finalize_sync(root, pack_path)
+        assert report['state'] == 'prepared'
+        assert report['rule_evidence_fingerprint'] == (
+            verification['rule_evidence_binding']['evidence']['evidence_fingerprint']
+        )
+    assert len(calls) > before
+    assert _git(root, 'rev-parse', 'HEAD') == head
+    assert _git(root, 'diff', '--cached', '--name-only') == ''
+
+
 def test_temporary_waiver_expiry_after_verify_fails_before_staging(
     tmp_path,
     monkeypatch,

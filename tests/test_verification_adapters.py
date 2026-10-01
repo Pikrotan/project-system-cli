@@ -666,6 +666,27 @@ def test_verification_adapter_result_exposes_semantic_status():
     assert "verification_status" in field_names
 
 
+def test_legacy_adapter_cannot_switch_to_semantic_hash_contract():
+    legacy = result(adapter_id="dart.analyze", evaluation_mode="project_wide",
+                    inspected_paths=())
+    changed = replace(legacy, semantic_sha256="c" * 64)
+    changed = replace(changed, result_sha256=adapters.verification_result_sha256(changed))
+    with pytest.raises(adapters.VerificationAdapterError, match="semantic hash contract"):
+        adapters.validate_verification_adapter_result(changed, expected_adapter_id="dart.analyze")
+
+
+@pytest.mark.parametrize("field", ["stdout_sha256", "stderr_sha256"])
+def test_semantic_adapter_still_validates_raw_execution_provenance_hashes(field):
+    semantic = replace(
+        result(adapter_id="dart.test", evaluation_mode="project_wide", inspected_paths=()),
+        semantic_sha256="c" * 64,
+    )
+    semantic = replace(semantic, result_sha256=adapters.verification_result_sha256(semantic))
+    malformed = replace(semantic, **{field: "bad"})
+    with pytest.raises(adapters.VerificationAdapterError, match=field):
+        adapters.validate_verification_adapter_result(malformed, expected_adapter_id="dart.test")
+
+
 
 def test_evaluator_rejects_missing_project_root(tmp_path):
     from project_system.verification_adapters import (

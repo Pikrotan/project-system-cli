@@ -1406,36 +1406,18 @@ def test_code_verification_flows_from_rule_engine_into_evidence(
     assert calls[0][1] == tmp_path
     assert calls[0][2] is None
 
-
-
-def test_evidence_rejects_code_verification_result_from_different_adapter(
+def test_dart_test_verification_flows_from_rule_engine_into_evidence(
     tmp_path,
     monkeypatch,
 ):
     from dataclasses import replace
 
     from project_system import verification_adapters
-    from project_system.rule_evidence import RuleEvidenceError
+    from project_system.rule_engine import evaluate_rules
     from project_system.verification_adapters import (
         VerificationAdapterResult,
-        VerificationAdapterSpec,
+        VerificationFinding,
         verification_result_sha256,
-    )
-
-    expanded_registry = dict(
-        verification_adapters.VERIFICATION_ADAPTER_REGISTRY
-    )
-    expanded_registry["other.verify"] = VerificationAdapterSpec(
-        adapter_id="other.verify",
-        version="1",
-        implementation=lambda root, paths, mode: None,
-        executes_project_code=False,
-    )
-
-    monkeypatch.setattr(
-        verification_adapters,
-        "VERIFICATION_ADAPTER_REGISTRY",
-        expanded_registry,
     )
 
     selected_rule = rule(
@@ -1443,7 +1425,83 @@ def test_evidence_rejects_code_verification_result_from_different_adapter(
         exception_policy="forbidden",
     )
     selected_rule["verification"]["parameters"] = {
-        "adapter": "dart.analyze",
+        "adapter": "dart.test",
+    }
+    registry = rules_registry({"TEST-001": selected_rule})
+    selected_context = context(tmp_path)
+
+    finding = VerificationFinding(
+        path="test/example_test.dart",
+        line=7,
+        column=3,
+        severity="ERROR",
+        code="dart_test.failure",
+        message="Dart test failure: example",
+    )
+    base = VerificationAdapterResult(
+        adapter_id="dart.test",
+        adapter_version="1",
+        tool_name="dart test",
+        tool_version="1.31.0",
+        evaluation_mode="project_wide",
+        verification_status="FAIL",
+        inspected_paths=(),
+        findings=(finding,),
+        exit_code=1,
+        stdout_sha256="a" * 64,
+        stderr_sha256="b" * 64,
+        result_sha256="0" * 64,
+        semantic_sha256="c" * 64,
+    )
+    adapter_result = replace(
+        base,
+        result_sha256=verification_result_sha256(base),
+    )
+
+    monkeypatch.setattr(
+        verification_adapters,
+        "evaluate_verification_adapter",
+        lambda *args, **kwargs: adapter_result,
+    )
+
+    raw_results = evaluate_rules(registry, selected_context)
+    evidence = build(
+        tmp_path,
+        registry=registry,
+        ctx=selected_context,
+        results=raw_results,
+    )
+
+    raw = raw_results[0]
+    item = evidence.results[0]
+    assert raw.details["adapter_id"] == "dart.test"
+    assert raw.details["result_sha256"] == adapter_result.result_sha256
+    assert raw.raw_status == "FAIL"
+    assert item.details["adapter_id"] == "dart.test"
+    assert item.details["adapter_version"] == "1"
+    assert item.details["tool_name"] == "dart test"
+    assert item.details["verification_status"] == "FAIL"
+    assert item.details["findings"][0]["path"] == "test/example_test.dart"
+    assert item.details["result_sha256"] == adapter_result.result_sha256
+
+
+def test_evidence_rejects_code_verification_result_from_different_adapter(
+    tmp_path,
+):
+    from dataclasses import replace
+
+    from project_system.rule_evidence import RuleEvidenceError
+    from project_system.verification_adapters import (
+        VerificationAdapterResult,
+        verification_result_sha256,
+    )
+
+    selected_rule = rule(
+        checker="code.verification",
+        exception_policy="forbidden",
+    )
+    selected_rule["verification"]["parameters"] = {
+        "adapter": "dart.test",
     }
 
     registry = rules_registry(
@@ -1453,10 +1511,10 @@ def test_evidence_rejects_code_verification_result_from_different_adapter(
     )
 
     base = VerificationAdapterResult(
-        adapter_id="other.verify",
+        adapter_id="dart.analyze",
         adapter_version="1",
-        tool_name="other-tool",
-        tool_version="1.0.0",
+        tool_name="dart",
+        tool_version="3.13.1",
         evaluation_mode="project_wide",
         verification_status="PASS",
         inspected_paths=(),

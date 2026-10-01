@@ -626,7 +626,7 @@ def _verification_finding_payload(finding):
 
 
 def _verification_result_payload(result):
-    return {
+    payload = {
         "adapter_id": result.adapter_id,
         "adapter_version": result.adapter_version,
         "tool_name": result.tool_name,
@@ -643,6 +643,11 @@ def _verification_result_payload(result):
         "stderr_sha256": result.stderr_sha256,
         "result_sha256": result.result_sha256,
     }
+    if result.semantic_sha256 is not None:
+        payload.pop("stdout_sha256")
+        payload.pop("stderr_sha256")
+        payload["semantic_sha256"] = result.semantic_sha256
+    return payload
 
 
 def _code_verification(context, parameters):
@@ -763,9 +768,6 @@ def _code_verification_outcome_messages(
 
     messages = []
 
-    if set(details) != required:
-        messages.append("code verification details fields are malformed")
-
     adapter_id = details.get("adapter_id")
     if adapter_id != expected_adapter:
         messages.append(
@@ -782,6 +784,14 @@ def _code_verification_outcome_messages(
         messages.append(
             "code verification adapter_version is inconsistent"
         )
+    semantic_contract = spec is not None and spec.uses_semantic_hash
+    if semantic_contract:
+        required -= {"stdout_sha256", "stderr_sha256"}
+        required.add("semantic_sha256")
+
+    # Check the exact field set after resolving the allowlisted contract.
+    if set(details) != required:
+        messages.append("code verification details fields are malformed")
 
     for name in ("tool_name", "tool_version"):
         value = details.get(name)
@@ -920,11 +930,12 @@ def _code_verification_outcome_messages(
             "code verification exit_code must be a non-negative integer"
         )
 
-    for name in (
-        "stdout_sha256",
-        "stderr_sha256",
-        "result_sha256",
-    ):
+    hash_fields = (
+        ("semantic_sha256", "result_sha256")
+        if semantic_contract
+        else ("stdout_sha256", "stderr_sha256", "result_sha256")
+    )
+    for name in hash_fields:
         value = details.get(name)
         if (
             not isinstance(value, str)
@@ -967,9 +978,13 @@ def _code_verification_outcome_messages(
                     for finding in details["findings"]
                 ),
                 exit_code=details["exit_code"],
-                stdout_sha256=details["stdout_sha256"],
-                stderr_sha256=details["stderr_sha256"],
+                # Semantic Evidence intentionally omits the execution hashes.
+                # These unused placeholders only fill the legacy result ABI;
+                # result hashing binds the required semantic digest instead.
+                stdout_sha256=details.get("stdout_sha256", "0" * 64),
+                stderr_sha256=details.get("stderr_sha256", "0" * 64),
                 result_sha256=details["result_sha256"],
+                semantic_sha256=details.get("semantic_sha256"),
             )
             expected_result_sha256 = verification_result_sha256(
                 reconstructed

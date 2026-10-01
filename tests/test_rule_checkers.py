@@ -502,6 +502,7 @@ def test_required_field_explicitly_incomplete_object_layer_is_error(tmp_path):
 
 def _verification_adapter_result(
     *,
+    adapter_id="dart.analyze",
     status="PASS",
     evaluation_mode="project_wide",
     findings=(),
@@ -515,7 +516,7 @@ def _verification_adapter_result(
     )
 
     base = VerificationAdapterResult(
-        adapter_id="dart.analyze",
+        adapter_id=adapter_id,
         adapter_version="1",
         tool_name="dart",
         tool_version="3.13.1",
@@ -527,6 +528,7 @@ def _verification_adapter_result(
         stdout_sha256="a" * 64,
         stderr_sha256="b" * 64,
         result_sha256="0" * 64,
+        semantic_sha256="c" * 64 if adapter_id == "dart.test" else None,
     )
     return replace(
         base,
@@ -571,6 +573,11 @@ def test_code_verification_checker_is_allowlisted_and_validates_adapter():
         "code.verification",
         {"adapter": "dart.analyze"},
     ) == ()
+
+    assert rule_checkers.checker_contract_messages(
+        "code.verification",
+        {"adapter": "dart.test", "args": ["test/small_test.dart"]},
+    ) == ("unknown parameter: args",)
 
 
 def test_code_verification_passes_scope_and_preserves_adapter_evidence(
@@ -640,6 +647,82 @@ def test_code_verification_passes_scope_and_preserves_adapter_evidence(
             ),
         )
     ]
+
+
+def test_code_verification_dispatches_dart_test_and_preserves_identity(
+    tmp_path,
+    monkeypatch,
+):
+    from project_system import rule_checkers, verification_adapters
+    from project_system.rule_engine import RuleEvaluationContext
+
+    calls = []
+    adapter_result = _verification_adapter_result(
+        adapter_id="dart.test",
+        status="PASS",
+    )
+
+    def fake_evaluate(adapter_id, project_root, **kwargs):
+        calls.append((adapter_id, project_root, kwargs))
+        return adapter_result
+
+    monkeypatch.setattr(
+        verification_adapters,
+        "evaluate_verification_adapter",
+        fake_evaluate,
+    )
+
+    outcome = rule_checkers.evaluate_checker(
+        "code.verification",
+        RuleEvaluationContext(
+            project_root=tmp_path,
+            checkpoint="project_validate",
+            objects={},
+            object_layer_complete=True,
+        ),
+        {"adapter": "dart.test"},
+    )
+
+    assert outcome.raw_status == "PASS"
+    assert outcome.details["adapter_id"] == "dart.test"
+    assert outcome.details["adapter_version"] == "1"
+    assert calls[0][0] == "dart.test"
+
+
+def test_code_verification_maps_dart_test_timeout_to_rule_error(
+    tmp_path,
+    monkeypatch,
+):
+    from project_system import rule_checkers, verification_adapters
+    from project_system.rule_engine import RuleEvaluationContext
+    from project_system.verification_adapters import VerificationAdapterError
+
+    def fail(*args, **kwargs):
+        raise VerificationAdapterError("sanitized adapter failure")
+
+    monkeypatch.setattr(
+        verification_adapters,
+        "evaluate_verification_adapter",
+        fail,
+    )
+
+    outcome = rule_checkers.evaluate_checker(
+        "code.verification",
+        RuleEvaluationContext(
+            project_root=tmp_path,
+            checkpoint="project_validate",
+            objects={},
+            object_layer_complete=True,
+        ),
+        {"adapter": "dart.test"},
+    )
+
+    assert outcome.raw_status == "ERROR"
+    assert outcome.details == {
+        "adapter_id": "dart.test",
+        "adapter_version": "1",
+    }
+    assert "trustworthy verification result" in outcome.failure_reason
 
 
 def test_code_verification_maps_not_applicable_without_false_pass(

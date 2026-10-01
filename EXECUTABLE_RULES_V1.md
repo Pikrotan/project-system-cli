@@ -745,6 +745,61 @@ Existing deterministic Project System invariants remain in place throughout migr
 
 Each stage must preserve existing behavior, add focused tests, inspect the diff, and pass the complete Project System test suite before the next stage.
 
+### Stage 9B: Dart test verification contract
+
+`dart.test@1` is an allowlisted `code.verification` adapter with
+`executes_project_code=True`. It invokes only `dart test --reporter json` through
+the existing process runner, with `shell=False`, a 300-second parent timeout and
+a 16 MiB limit per captured stream. Rule parameters accept only the adapter ID.
+
+Without a deterministic dependency map, every non-empty bounded project change
+escalates to `project_wide_invalidation`, including fixtures, documentation and
+assets. Unbounded evaluation is `project_wide`. Both run the complete configured
+suite. An empty bounded set returns `NOT_APPLICABLE` without execution. No test
+selection heuristics or Rule scope are supported.
+
+The JSON reporter protocol `0.1.x` is validated before classification. A failing
+completion must agree with its preceding `error` events: `failure` requires only
+TestFailure errors and `error` requires at least one non-TestFailure error.
+Successful completion with an earlier error is malformed. Errors after successful
+completion are supported and change the final outcome to failure. Malformed,
+incomplete or inconsistent output, unsupported exit codes, timeout and execution
+failure become Rule `ERROR`, never a waivable `FAIL`. Exit 0 must agree with
+successful completion; exit 1 must agree with proved test failures. All-skipped,
+all-hidden or empty completed runs return `NOT_APPLICABLE`; at least one executed,
+non-hidden, non-skipped successful test is required for `PASS`.
+
+Verification Adapter results now support an optional `semantic_sha256` contract,
+required only for adapters whose packaged registry metadata declares
+`uses_semantic_hash=True`. Such results retain raw `stdout_sha256` and
+`stderr_sha256` as execution provenance at the adapter boundary. Their stable
+`result_sha256` binds `semantic_sha256` instead of those volatile raw hashes.
+Semantic Rule Evidence contains `semantic_sha256` and the normalized result,
+excluding raw transcript hashes. Those hashes remain available in the returned
+execution result, but are not persisted as part of deterministic Rule Evidence.
+They do not prove semantic equality, and no durable execution transcript report
+is introduced in Stage 9B.
+
+The Dart semantic digest binds a versioned representation of reporter/runner
+versions, sorted suite paths/platforms and the complete sorted test inventory:
+suite, name, source coordinates, completion/final outcome, skipped/hidden state
+and counts/classes of errors before/after completion. Duplicate semantic test
+identities preserve multiplicity. Reporter IDs, PID, elapsed time, independent
+event interleaving and raw print/error/stack text are excluded. Paths are contained
+in the project root. Findings remain normalized, sorted and deduplicated.
+
+Consumers reject missing/malformed semantic hashes, contract downgrades, raw
+provenance injection into semantic Evidence, identity/version mismatches and
+tampered result hashes. Legacy adapters, including `dart.analyze`, retain their
+existing raw-hash result/Evidence contract unchanged. SYNC rechecks use the same
+Evidence validation; no finalization bypass is introduced. Unreleased Stage 9B
+artifacts using the previous raw-hash contract must be regenerated.
+
+Remaining Stage 9B limits: project code runs with CLI privileges and no OS sandbox;
+the parent timeout does not guarantee process-tree termination; environment and
+toolchain fingerprinting remain incomplete. Flutter/pytest/npm, coverage and
+selective dependency mapping are future stages.
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.

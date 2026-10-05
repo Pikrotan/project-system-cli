@@ -1105,3 +1105,56 @@ def test_osv_finalize_binds_accepted_tool_version_even_with_same_semantics(tmp_p
     assert rebuilt != verified['rule_evidence_binding']
     assert _osv_repository_identity(root, pack_path) == identity
     _assert_osv_blocked(output, head, root)
+
+
+@pytest.mark.parametrize('format_drift', [False, True])
+def test_dart_format_fresh_sync_recheck_binds_semantics_not_transcript(
+    tmp_path, monkeypatch, format_drift,
+):
+    from project_system import dart_analyze_adapter, dart_format_adapter
+
+    def configure(root, path, object_id):
+        source = root / 'lib' / 'main.dart'
+        source.parent.mkdir()
+        source.write_text('void main() {}\n', encoding='utf-8')
+        _write_rule_layer(root, {'QUALITY-001': {
+            'title': 'Formatting', 'status': 'active', 'category': 'testing',
+            'description': 'Verify project-owned Dart formatting.',
+            'verification': {'method': 'deterministic', 'checker': 'code.verification',
+                             'parameters': {'adapter': 'dart.format'}},
+            'enforcement': {'severity': 'WARNING',
+                            'checkpoints': ['project_validate', 'sync_verify']},
+            'exception_policy': 'forbidden',
+        }})
+
+    dirty, volatile = False, False
+    format_calls = []
+
+    def run(argv, **kwargs):
+        if argv == ['dart', '--version']:
+            return subprocess.CompletedProcess(argv, 0, 'Dart SDK version: 3.13.1', '')
+        assert argv[:4] == ['dart', 'format', '--output=none', '--set-exit-if-changed']
+        assert kwargs['shell'] is False
+        format_calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, int(dirty),
+                                           'different transcript' if volatile else '',
+                                           'stderr noise' if volatile else '')
+
+    monkeypatch.setattr(dart_format_adapter, 'run_process', run)
+    monkeypatch.setattr(dart_analyze_adapter, 'run_process', run)
+    root, _, _, head, _, pack_path, output, _ = _setup_verified(tmp_path, configure=configure)
+    verified = json.loads((output / 'verification.json').read_text(encoding='utf-8'))
+    before = _osv_repository_identity(root, pack_path)
+    scans_before = len(format_calls)
+    dirty, volatile = format_drift, True
+    if format_drift:
+        with pytest.raises(SyncFinalizeIntegrityError, match='Rule Evidence changed'):
+            finalize_sync(root, pack_path)
+        _assert_osv_blocked(output, head, root)
+    else:
+        _, report = finalize_sync(root, pack_path)
+        assert report['state'] == 'prepared'
+        assert report['rule_evidence_fingerprint'] == verified['rule_evidence_binding']['evidence']['evidence_fingerprint']
+        assert report['commit_result'] == report['push_result'] == 'not_requested'
+    assert len(format_calls) > scans_before
+    assert _osv_repository_identity(root, pack_path) == before

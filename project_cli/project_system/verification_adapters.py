@@ -73,7 +73,7 @@ class VerificationAdapterSpec:
     uses_network: bool = False
 
 
-from . import dart_analyze_adapter, dart_test_adapter, osv_scan_adapter
+from . import dart_analyze_adapter, dart_format_adapter, dart_test_adapter, osv_scan_adapter
 
 
 VERIFICATION_ADAPTER_REGISTRY = MappingProxyType(
@@ -96,6 +96,15 @@ VERIFICATION_ADAPTER_REGISTRY = MappingProxyType(
             global_input_patterns=("**",),
             executes_project_code=True,
             uses_semantic_hash=True,
+        ),
+        "dart.format": VerificationAdapterSpec(
+            adapter_id="dart.format",
+            version="1",
+            implementation=dart_format_adapter.run_dart_format,
+            global_input_patterns=("**",),
+            executes_project_code=False,
+            uses_semantic_hash=True,
+            uses_network=False,
         ),
         "osv.scan": VerificationAdapterSpec(
             adapter_id="osv.scan",

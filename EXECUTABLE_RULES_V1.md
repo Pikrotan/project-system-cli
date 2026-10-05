@@ -1053,6 +1053,96 @@ Re-execution is an observation, not a guarantee that external state cannot chang
 again after the current checkpoint. No new scanner, cache/offline DB lifecycle,
 remediation or Stage 10 behavior is included.
 
+### Stage 10A: deterministic Dart formatting quality gate
+
+Stage 10A reuses `Project Rule -> code.verification -> Verification Adapter ->
+Rule Evidence v1 -> SYNC binding/finalization`. Formatting is one packaged
+adapter, not a new generic checker, Rule schema, Evidence version, quality-gate
+result type or configurable command runner. `dart.analyze@1`, `dart.test@1` and
+`osv.scan@1` retain their existing semantics.
+
+`dart.format@1` has packaged metadata `executes_project_code=False`,
+`uses_semantic_hash=True`, `uses_network=False` and
+`global_input_patterns=("**",)`. Empty bounded input `()` is `NOT_APPLICABLE`
+without discovery or tool execution. Any non-empty bounded change deliberately
+invalidates the complete project (`project_wide_invalidation`); `None` uses
+`project_wide`. Trusted discovery with no project-owned Dart files also returns
+`NOT_APPLICABLE` without a version probe. There is no selective mapping.
+
+**Discovery authority.** Project System recursively discovers regular `.dart`
+files and returns sorted canonical repository-relative paths. It does not
+follow symlinks/reparse points and rejects observed unsafe paths or failed
+enumeration/inspection/read of non-excluded inputs. At every depth it excludes
+case-insensitive infrastructure names `.git`, `.generated`, `.dart_tool`,
+`.pub-cache`, `build`, `node_modules`, `.venv`, `venv`, `__pycache__`, `vendor`,
+`dist`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.cache`, `.tox`, `.nox`
+and `coverage`. Filename suffixes such as `.g.dart`, `.freezed.dart` or
+`generated.dart` are **not** exclusions outside these subtrees.
+
+**Fixed read-only execution.** The existing Dart SDK version probe is reused.
+Each discovered source is checked separately using:
+
+```text
+dart format --output=none --set-exit-if-changed <absolute-explicit-file>
+```
+
+The formatter uses `shell=False`, project-root cwd, a 120-second per-process
+timeout and a 16 MiB per-stream capture limit through the existing bounded
+process runner. The version probe retains its existing 10-second/64 KiB limits.
+Paths are positional argv entries, never shell interpolation or project-supplied
+flags. There is no `dart format .`, autofix, SDK installation, `pub get`,
+`flutter pub get`, `dart fix` or package-manager mutation. Exit semantics, not
+unstable human formatter text, are authoritative. The fixed flags and exit
+contract are described in the [official Dart formatter documentation](https://dart.dev/tools/dart-format).
+
+**Outcomes.** Per-file exit `0` means formatter-clean and `1` means the formatter
+would change that file. All inputs are checked to obtain the complete inventory.
+The aggregate is `PASS` when all are clean and `FAIL` when any would change;
+aggregate exit code is respectively `0` or `1`. Each unformatted source yields
+exactly one sorted concrete finding: canonical relative `path`, null
+`line`/`column`, severity `ERROR`, code `dart.format.required`, message
+`Dart source is not formatter-clean`. Missing tool, version failure, timeout,
+capture overflow, unsupported exit, malformed process result, unsafe input,
+observable discovery/content drift or execution failure is
+`VerificationAdapterError`/Rule `ERROR`, never vulnerability/formatting `FAIL`.
+A later infrastructure error cannot be hidden by an earlier formatting finding.
+The existing Rule severity, governed exceptions and SYNC Evidence checks apply.
+
+**Source stability.** F0 before the version/formatter checks binds the complete
+sorted source inventory and each file's streamed SHA-256. F1 after all checks
+repeats authoritative discovery and hashing; F0 must equal F1. Hashing uses
+fixed 1 MiB reads and the existing platform no-follow read primitive, with
+regular non-reparse path/handle observations before and after reading.
+Addition/removal, content mutation (including same-size mutation with restored
+mtime) or observed unsafe transitions are `ERROR`. Handles are closed and no
+fallback to an unsafe read is provided. This is observable drift detection, not
+an OS snapshot, atomic path resolution or protection against all concurrent
+changes. No new binary/config attestation subsystem is introduced.
+
+**Semantic schema v1.** `semantic_sha256` binds exactly `schema_version=1`, the
+complete sorted `source_paths`, and sorted `unformatted_paths`. Source bytes,
+runtime content hashes, inode/mtime, raw output, absolute paths, PID, timing and
+temporary data are excluded. Raw stdout/stderr provenance is incrementally
+hashed with length-framed source-path/stream bytes; complete transcripts are
+not accumulated across files. Common result hashing still binds `tool_version`.
+Equivalent formatter inventory with different raw output retains the same
+semantic/result hash and Rule Evidence. Changed source/violating path inventory
+changes semantics. Runtime source hashes never enter semantic Rule Evidence.
+
+**Operational limits.** The installed Dart formatter remains authoritative for
+its SDK and project configuration. Formatter behavior may depend on toolchain,
+language version, formatter settings and package/environment state. Stage 10A
+does not fingerprint or manufacture that environment, does not run `pub get`
+to create `.dart_tool`, and adds no TTL, cache or environment attestation.
+Per-process bounds are not an aggregate project deadline; many source files
+cost one formatter process each plus two streaming hash passes. Trusted SDK
+behavior is assumed: read-only flags are not an OS sandbox. Human review and
+the existing governance remain authoritative for meaning-changing edits.
+
+Stage 10 is **not closed**: 10B/10C remain. Stage 10A is accepted as the
+deterministic Dart formatting quality gate; it does not add strict analyzer policy,
+coverage, complexity/duplication metrics, SAST, secrets or later stages.
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.

@@ -1249,3 +1249,283 @@ def test_dart_analyze_strict_fresh_sync_recheck_binds_semantics_not_transcript(
         assert report['rule_evidence_fingerprint'] == rebuilt['evidence']['evidence_fingerprint']
     # File bytes, source, HEAD, index, diffs and actual verified fingerprint are unchanged.
     assert _osv_repository_identity(root, pack_path) == before
+
+
+def _stage10c_quality_rules(format_severity='WARNING', strict_severity='BLOCKING', *, reverse=False):
+    rules = {}
+    for rule_id, adapter, severity in (
+        ('QUALITY-001', 'dart.format', format_severity),
+        ('QUALITY-002', 'dart.analyze.strict', strict_severity),
+    ):
+        rules[rule_id] = {
+            'title': adapter, 'status': 'active', 'category': 'testing',
+            'description': 'Verify the independently governed Dart quality capability.',
+            'verification': {'method': 'deterministic', 'checker': 'code.verification',
+                             'parameters': {'adapter': adapter}},
+            'enforcement': {'severity': severity,
+                            'checkpoints': ['project_validate', 'sync_verify']},
+            'exception_policy': 'forbidden',
+        }
+    return dict(reversed(tuple(rules.items()))) if reverse else rules
+
+
+def _stage10c_source(root):
+    source = root / 'lib' / 'main.dart'
+    source.parent.mkdir()
+    source.write_text('void main() {}\n', encoding='utf-8')
+
+
+def _stage10c_transport(monkeypatch):
+    from project_system import dart_analyze_adapter, dart_format_adapter
+
+    state = {'format_dirty': False, 'strict_info': False, 'volatile': False,
+             'error_adapter': None, 'calls': {'dart.format': [], 'dart.analyze.strict': []},
+             'rechecks': []}
+
+    def run(argv, **kwargs):
+        if argv == ['dart', '--version']:
+            return subprocess.CompletedProcess(argv, 0, 'Dart SDK version: 3.13.1', '')
+        root = kwargs['cwd']
+        assert kwargs['shell'] is False
+        if argv[:4] == ['dart', 'format', '--output=none', '--set-exit-if-changed']:
+            assert len(argv) == 5 and Path(argv[4]) == root / 'lib' / 'main.dart'
+            adapter_id = 'dart.format'
+            stdout = 'volatile formatter transcript' if state['volatile'] else ''
+            exit_code = int(state['format_dirty'])
+        else:
+            assert argv == ['dart', 'analyze', '--format=machine', '--no-plugins', '--fatal-infos', '.']
+            adapter_id = 'dart.analyze.strict'
+            stdout = '\n\n' if state['volatile'] else ''
+            if state['strict_info']:
+                machine_path = (root / 'lib' / 'main.dart').as_posix()
+                stdout += f'INFO|HINT|LINT|{machine_path}|1|1|1|Consider a better name.\n'
+            exit_code = int(state['strict_info'])
+        stderr = f'volatile {adapter_id} stderr' if state['volatile'] else ''
+        state['calls'][adapter_id].append((tuple(argv), root, stdout, stderr))
+        if state['error_adapter'] == adapter_id:
+            raise OSError('SECRET-TRANSPORT-TOKEN C:\\private\\tool https://private.example/?token=hidden')
+        return subprocess.CompletedProcess(argv, exit_code, stdout, stderr)
+
+    monkeypatch.setattr(dart_format_adapter, 'run_process', run)
+    monkeypatch.setattr(dart_analyze_adapter, 'run_process', run)
+    return state
+
+
+def _stage10c_evidence(root, rules, *, checkpoint='sync_verify', results=None):
+    from project_system.rule_engine import RuleEvaluationContext, evaluate_rules
+    from project_system.rule_evidence import build_rule_evidence, rule_evidence_to_dict
+
+    registry = {'schema_version': 1, 'profile': 'project-system-rules-v1', 'rules': rules}
+    context = RuleEvaluationContext(root, checkpoint, {}, True, evaluation_paths=('README.md',))
+    results = evaluate_rules(registry, context) if results is None else results
+    return rule_evidence_to_dict(build_rule_evidence(
+        project_id='demo', git_head='1' * 40, base_commit='1' * 40, cli_version='test',
+        rules_registry=registry, context=context, results=results,
+        exception_registry={'schema_version': 1, 'profile': 'project-system-rule-exceptions-v1', 'exceptions': {}},
+    ))
+
+
+def _stage10c_assert_combined_evidence(payload):
+    assert payload['schema_version'] == 1
+    assert [item['rule_id'] for item in payload['results']] == ['QUALITY-001', 'QUALITY-002']
+    for item, adapter_id in zip(payload['results'], ('dart.format', 'dart.analyze.strict')):
+        assert item['checker'] == 'code.verification'
+        assert item['details']['adapter_id'] == adapter_id
+        assert item['details']['adapter_version'] == '1'
+        assert 'stdout_sha256' not in item['details'] and 'stderr_sha256' not in item['details']
+        if item['raw_status'] != 'ERROR':
+            assert len(item['details']['semantic_sha256']) == 64
+            assert len(item['details']['result_sha256']) == 64
+
+
+@pytest.mark.parametrize('checkpoint', ['project_validate', 'sync_verify'])
+def test_stage10c_combined_pass_and_registry_order_independence(tmp_path, monkeypatch, checkpoint):
+    _stage10c_source(tmp_path)
+    state = _stage10c_transport(monkeypatch)
+    normal = _stage10c_quality_rules()
+    reversed_rules = _stage10c_quality_rules(reverse=True)
+    assert tuple(normal) == ('QUALITY-001', 'QUALITY-002')
+    assert tuple(reversed_rules) == ('QUALITY-002', 'QUALITY-001')
+    first = _stage10c_evidence(tmp_path, normal, checkpoint=checkpoint)
+    second = _stage10c_evidence(tmp_path, reversed_rules, checkpoint=checkpoint)
+    _stage10c_assert_combined_evidence(first)
+    assert first == second  # Includes canonical registry hash, result order and Evidence fingerprint.
+    assert all(item['raw_status'] == item['effective_status'] == 'PASS' for item in first['results'])
+    assert all(len(calls) == 2 for calls in state['calls'].values())
+    assert first['results'][0]['details']['result_sha256'] != first['results'][1]['details']['result_sha256']
+
+
+@pytest.mark.parametrize('recipient,field', [
+    (0, 'result_sha256'), (1, 'result_sha256'), (0, 'details'), (1, 'details'),
+])
+def test_stage10c_cross_rule_result_substitution_is_rejected(tmp_path, monkeypatch, recipient, field):
+    from dataclasses import replace
+    from project_system.rule_engine import RuleEvaluationContext, evaluate_rules
+    from project_system.rule_evidence import RuleEvidenceError
+
+    _stage10c_source(tmp_path)
+    state = _stage10c_transport(monkeypatch)
+    rules = _stage10c_quality_rules()
+    results = list(evaluate_rules(
+        {'schema_version': 1, 'profile': 'project-system-rules-v1', 'rules': rules},
+        RuleEvaluationContext(tmp_path, 'sync_verify', {}, True),
+    ))
+    assert all(len(calls) == 1 for calls in state['calls'].values())
+    _stage10c_assert_combined_evidence(_stage10c_evidence(tmp_path, rules, results=results))
+    donor = results[1 - recipient].details
+    details = dict(donor) if field == 'details' else {**results[recipient].details, field: donor[field]}
+    results[recipient] = replace(results[recipient], details=details)
+    with pytest.raises(RuleEvidenceError):
+        _stage10c_evidence(tmp_path, rules, results=results)
+
+
+@pytest.mark.parametrize('format_dirty,strict_info,format_severity,strict_severity,blocking_ids', [
+    (False, False, 'WARNING', 'BLOCKING', ()),
+    (True, True, 'WARNING', 'BLOCKING', ('QUALITY-002',)),
+    (True, True, 'BLOCKING', 'WARNING', ('QUALITY-001',)),
+    (True, False, 'WARNING', 'BLOCKING', ()),
+    (True, False, 'BLOCKING', 'WARNING', ('QUALITY-001',)),
+    (False, True, 'BLOCKING', 'WARNING', ()),
+    (False, True, 'WARNING', 'BLOCKING', ('QUALITY-002',)),
+])
+def test_stage10c_project_validate_no_short_circuit_and_per_rule_enforcement(
+    tmp_path, monkeypatch, format_dirty, strict_info, format_severity, strict_severity, blocking_ids,
+):
+    from project_system.rule_evidence import rule_evidence_to_dict
+
+    state = _stage10c_transport(monkeypatch)
+
+    def configure(root, path, object_id):
+        _stage10c_source(root)
+        _write_rule_layer(root, _stage10c_quality_rules(format_severity, strict_severity))
+
+    root, _, _, _, _, _, _, _ = _setup_plan(tmp_path, configure=configure)
+    before = {adapter: len(calls) for adapter, calls in state['calls'].items()}
+    state.update(format_dirty=format_dirty, strict_info=strict_info)
+    report = validation_module.validate_report(root)  # Real public project_validate path.
+    payload = rule_evidence_to_dict(report.rule_evidence)
+    _stage10c_assert_combined_evidence(payload)
+    assert payload['checkpoint'] == 'project_validate'
+    for item, dirty, severity in zip(payload['results'], (format_dirty, strict_info),
+                                     (format_severity, strict_severity)):
+        assert item['raw_status'] == item['effective_status'] == ('FAIL' if dirty else 'PASS')
+        assert item['severity'] == severity
+        assert item['details']['verification_status'] == ('FAIL' if dirty else 'PASS')
+        if dirty:
+            finding, = item['details']['findings']
+            assert finding['path'] == 'lib/main.dart'
+            assert finding['code'] == ('dart.format.required' if item['rule_id'] == 'QUALITY-001' else 'LINT')
+            assert finding['severity'] == ('ERROR' if item['rule_id'] == 'QUALITY-001' else 'INFO')
+    assert all(len(calls) == before[adapter] + 1 for adapter, calls in state['calls'].items())
+    blocking = [location for level, location, _ in report.issues if level in {'BLOCKING', 'ERROR'}]
+    assert tuple(blocking) == blocking_ids
+    rule_issues = {location: level for level, location, _ in report.issues if location.startswith('QUALITY-')}
+    assert rule_issues == {rule_id: severity for rule_id, dirty, severity in (
+        ('QUALITY-001', format_dirty, format_severity), ('QUALITY-002', strict_info, strict_severity),
+    ) if dirty}
+
+
+def _stage10c_verified_project(tmp_path, monkeypatch):
+    from project_system import sync_finalization
+
+    state = _stage10c_transport(monkeypatch)
+
+    def configure(root, path, object_id):
+        _stage10c_source(root)
+        _write_rule_layer(root, _stage10c_quality_rules('WARNING', 'INFO'))
+
+    root, _, _, head, _, pack_path, output, _ = _setup_verified(tmp_path, configure=configure)
+    verified = json.loads((output / 'verification.json').read_text(encoding='utf-8'))
+    _stage10c_assert_combined_evidence(verified['rule_evidence_binding']['evidence'])
+    assert verified['verification_result'] == 'passed'
+    assert verified['errors'] == []
+    assert verified['validation']['generation_ran'] is True
+    assert verified['rule_evidence_binding']['evidence']['checkpoint'] == 'sync_verify'
+    assert all(item['raw_status'] == 'PASS' for item in verified['rule_evidence_binding']['evidence']['results'])
+    assert all(calls for calls in state['calls'].values())
+    real_validate = sync_finalization.validate_report
+
+    def observe(root, **options):
+        current = real_validate(root, **options)
+        state['rechecks'].append((options, current))
+        return current
+
+    monkeypatch.setattr(sync_finalization, 'validate_report', observe)
+    return root, head, pack_path, output, verified, state
+
+
+@pytest.mark.parametrize('drift', ['none', 'format', 'strict', 'both'])
+def test_stage10c_combined_fresh_sync_volatility_and_isolated_semantic_drift(tmp_path, monkeypatch, drift):
+    root, head, pack_path, output, verified, state = _stage10c_verified_project(tmp_path, monkeypatch)
+    identity = _osv_repository_identity(root, pack_path)
+    assert identity[2] == (verified['verified_working_tree_state'], verified['verification_fingerprint'])
+    before = {adapter: len(calls) for adapter, calls in state['calls'].items()}
+    state.update(volatile=True, format_dirty=drift in {'format', 'both'}, strict_info=drift in {'strict', 'both'})
+    if drift == 'none':
+        _, report = finalize_sync(root, pack_path)
+        assert report['state'] == _load_finalization(output)['state'] == 'prepared'
+        assert report['commit_requested'] is report['push_requested'] is False
+        assert report['commit_result'] == report['push_result'] == 'not_requested'
+        assert report['commit_sha'] is None
+    else:
+        with pytest.raises(SyncFinalizeIntegrityError, match='Rule Evidence changed.*sync verify again'):
+            finalize_sync(root, pack_path)
+        _assert_osv_blocked(output, head, root)
+    for adapter, calls in state['calls'].items():
+        assert len(calls) > before[adapter]
+        assert all(cwd == root.resolve() and stdout and stderr
+                   for _, cwd, stdout, stderr in calls[before[adapter]:])
+    current, rebuilt = _osv_fresh_binding(verified, state)
+    _stage10c_assert_combined_evidence(rebuilt['evidence'])
+    assert not any(level in {'BLOCKING', 'ERROR'} for level, _, _ in current.issues)
+    for old, new, changed in zip(verified['rule_evidence_binding']['evidence']['results'],
+                                rebuilt['evidence']['results'], (state['format_dirty'], state['strict_info'])):
+        assert new['raw_status'] == ('FAIL' if changed else 'PASS')
+        assert (new['details']['semantic_sha256'] != old['details']['semantic_sha256']) == changed
+        assert (new['details']['result_sha256'] != old['details']['result_sha256']) == changed
+        if not changed:
+            assert new == old
+    if drift == 'none':
+        assert rebuilt == verified['rule_evidence_binding']
+        assert report['rule_evidence_fingerprint'] == rebuilt['evidence']['evidence_fingerprint']
+    else:
+        assert rebuilt != verified['rule_evidence_binding']
+    assert _osv_repository_identity(root, pack_path) == identity
+
+
+@pytest.mark.parametrize('error_adapter', ['dart.format', 'dart.analyze.strict'])
+@pytest.mark.parametrize('other_fails', [False, True])
+def test_stage10c_combined_infrastructure_error_isolated_fail_closed_and_sanitized(
+    tmp_path, monkeypatch, capsys, error_adapter, other_fails,
+):
+    root, head, pack_path, output, verified, state = _stage10c_verified_project(tmp_path, monkeypatch)
+    identity = _osv_repository_identity(root, pack_path)
+    before = {adapter: len(calls) for adapter, calls in state['calls'].items()}
+    state.update(error_adapter=error_adapter,
+                 format_dirty=other_fails and error_adapter != 'dart.format',
+                 strict_info=other_fails and error_adapter != 'dart.analyze.strict')
+    with pytest.raises(SyncFinalizeIntegrityError, match='current sync_verify Rules do not pass') as caught:
+        finalize_sync(root, pack_path)
+    assert all(len(calls) > before[adapter] for adapter, calls in state['calls'].items())
+    current, rebuilt = _osv_fresh_binding(verified, state)
+    _stage10c_assert_combined_evidence(rebuilt['evidence'])
+    for item in rebuilt['evidence']['results']:
+        is_error = item['details']['adapter_id'] == error_adapter
+        assert item['raw_status'] == item['effective_status'] == (
+            'ERROR' if is_error else 'FAIL' if other_fails else 'PASS'
+        )
+        assert item['exception_id'] is None
+        if is_error:
+            assert item['details'] == {'adapter_id': error_adapter, 'adapter_version': '1'}
+    assert rebuilt['evidence']['applied_exception_ids'] == []
+    error_rule = 'QUALITY-001' if error_adapter == 'dart.format' else 'QUALITY-002'
+    assert any(level == 'ERROR' and location == error_rule for level, location, _ in current.issues)
+    assert rebuilt != verified['rule_evidence_binding']
+    captured = capsys.readouterr()
+    exposed = str(caught.value) + json.dumps(rebuilt) + repr(current.issues) + captured.out + captured.err
+    exposed += ''.join((output / name).read_text(encoding='utf-8')
+                       for name in ('finalization.json', 'finalization.md'))
+    for secret in ('SECRET-TRANSPORT-TOKEN', 'C:\\private\\tool', 'private.example', 'token=hidden'):
+        assert secret not in exposed
+    assert _osv_repository_identity(root, pack_path) == identity
+    _assert_osv_blocked(output, head, root)

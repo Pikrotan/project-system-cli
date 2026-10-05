@@ -1139,7 +1139,8 @@ cost one formatter process each plus two streaming hash passes. Trusted SDK
 behavior is assumed: read-only flags are not an OS sandbox. Human review and
 the existing governance remain authoritative for meaning-changing edits.
 
-Stage 10 is **not closed**: 10C remains. Stage 10A is accepted as the
+At Stage 10A acceptance, Stage 10 was **not closed**: 10B/10C remained.
+Stage 10A is accepted as the
 deterministic Dart formatting quality gate; it does not add strict analyzer policy,
 coverage, complexity/duplication metrics, SAST, secrets or later stages.
 
@@ -1230,9 +1231,70 @@ filesystem sandbox; trusted SDK behavior is assumed. No live Dart/network is
 required by the regression tests. Human governance remains authoritative for
 meaning-changing edits.
 
-Stage 10 is **NOT closed**: **10C remains**. Stage 10B adds no coverage, mutation
+At Stage 10B acceptance, Stage 10 was **NOT closed**: **10C remained**.
+Stage 10B adds no coverage, mutation
 testing, complexity/duplication metrics, method-length limit, SAST, secrets,
 SBOM/licenses, plugins, autofix, arbitrary commands, Stage 11 or Stage 12.
+
+### Stage 10C: Code Quality Gates closure
+
+Stage 10 consists of three bounded steps:
+
+- **10A** — `dart.format@1`, the deterministic formatting gate.
+- **10B** — `dart.analyze.strict@1`, the strict static-quality gate.
+- **10C** — composition/integration closure through the existing Rules,
+  Evidence v1, validation and SYNC lifecycle.
+
+The combined fixture activates independent `QUALITY-001` (`dart.format`) and
+`QUALITY-002` (`dart.analyze.strict`) Rules at `project_validate` and `sync_verify`.
+Only the Dart process transport is replaced in tests: parsing, discovery, source
+stability, Rule evaluation, Evidence construction, validation, planning,
+verification and dry-run finalization use the existing implementations.
+
+The composition checks establish:
+
+- Both adapters execute and produce separately identified Rule results. Combined
+  Evidence remains schema v1 and is identical for opposite registry insertion
+  orders with otherwise identical inputs.
+- Multiple valid failures do not short-circuit evaluation. Each Rule retains its
+  own findings, analyzer/formatter status and result hash. Gate consequences
+  derive from that Rule's enforcement severity, not diagnostic severity or a new
+  quality-specific policy.
+- Semantic Evidence contains each adapter's `semantic_sha256`, not raw
+  stdout/stderr hashes. Cross-Rule result-hash substitution and swapped adapter
+  identities are rejected by the existing contracts.
+- Real `plan_sync -> verify_sync -> finalize_sync` executes both adapters freshly
+  at the final `sync_verify` recheck. Equivalent PASS with raw transcript
+  volatility preserves both semantic/result hashes and the exact Evidence
+  binding, allowing dry-run `prepared` without requesting commit or push.
+- Format-only, strict-only and combined semantic drift change the affected
+  Evidence while preserving the unaffected Rule result. Stale finalization is
+  rejected even with nonblocking Rule severities and unchanged file bytes,
+  HEAD, index, Git diffs and working-tree verification fingerprint.
+- Either adapter's infrastructure ERROR remains ERROR, cannot become FAIL or
+  WAIVED, and blocks finalization independently of the other adapter's valid
+  PASS/FAIL. Secret transport exception text is absent from captured output,
+  Evidence, validation issues and finalization reports.
+
+No production adapter, checker, schema, Evidence version, exception behavior,
+SYNC finalization protocol, package layout or version is changed by 10C.
+
+**Closure statement for independent main-chat acceptance:**
+**Stage 10 — COMPLETE**. This statement becomes authoritative only after the
+independent integrity review; the implementation candidate does not self-approve
+closure or declare readiness to commit.
+
+The closure is limited to deterministic Dart formatting and strict analyzer
+quality gates through existing Rule Evidence/SYNC governance. It does not mean
+all code-quality or security concerns are implemented. Coverage, mutation
+testing, regression strength, complexity/duplication thresholds, SAST, secrets,
+SBOM/licenses, plugins, autofix and arbitrary commands remain out of scope.
+Installed toolchain/configuration/environment assumptions, lack of OS sandbox
+and incomplete environment attestation remain as documented in 10A/10B. These
+tests require neither live Dart nor network and do not attest those live systems.
+
+**Next: Stage 11 — Mutation and Regression Quality.** No Stage 11 behavior is
+implemented or implied by this closure.
 
 ## Normative v1 field contract
 

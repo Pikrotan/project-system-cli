@@ -984,7 +984,7 @@ establishing the same semantic result retain the same semantic/result hash even
 when runtime state differs between runs. `NOT_APPLICABLE`, `PASS`, vulnerability
 `FAIL` and infrastructure/integrity `ERROR` semantics remain those of Stage 9C1.
 
-**Limits and remaining stage.** This is not an OS-level snapshot, filesystem
+**Stage 9C2A limits.** This is not an OS-level snapshot, filesystem
 transaction, OS sandbox or binary authenticity attestation. Transient mutation
 fully restored between observable checks can remain undetected, including
 concurrent changes during a streamed read which leave no observable metadata
@@ -994,8 +994,64 @@ wall-clock deadline. Cleanup cannot guarantee recovery of artifacts moved away
 by an external actor, and fails closed on observed unsafe paths rather than
 following them. OSV remains external and network-backed, without offline DB,
 network cache, Evidence TTL, remediation or selective dependency mapping.
-Stage 9C2 is **not fully closed**: 9C2B still needs explicit mutable network-state
-and SYNC regression coverage.
+
+#### Stage 9C2B: mutable network state / SYNC Rule Evidence revalidation
+
+`sync_verify` persists common Rule Evidence at the `sync_verify` checkpoint,
+bound to the exact verified working-tree fingerprint. Before preparing or
+creating a new SYNC commit, `sync_finalize` re-evaluates current Rules through
+that same checkpoint, with the same base commit and changed canonical paths.
+An applicable `code.verification` Rule using `osv.scan@1` therefore executes a
+fresh OSV scan; stored `PASS` is not used as the current verification result.
+The existing retry path for an already proven SYNC commit does not reopen its
+historical verification or authorize a different commit.
+
+Working-tree identity and external vulnerability state are different axes.
+Unchanged file bytes, Git HEAD/index and verification fingerprint do **not**
+establish unchanged OSV state. Current `BLOCKING`/`ERROR` issues reject
+finalization. Even when current issues are non-blocking, the freshly rebuilt
+Rule Evidence binding must equal the verified binding exactly; otherwise a new
+`project sync verify` is required. A valid new vulnerability is raw `FAIL` and
+blocks stale finalization. `WARNING`/`INFO` enforcement does not bypass Evidence
+drift. An existing governed exception may make a current vulnerability `WAIVED`,
+but cannot retroactively make old `PASS` Evidence current. Execution/network
+failure or an untrustworthy scan is raw/effective `ERROR`, not vulnerability
+`FAIL`, cannot be waived and blocks regardless of enforcement severity. Raw
+exception/transport text is not exposed in Rule failures or finalization reports.
+
+Fresh execution does not imply that raw representations must be identical.
+Already accepted JSON formatting, object/package/group/alias ordering, advisory
+prose and stderr volatility are non-semantic: equivalent inventory and findings
+retain the same `semantic_sha256`, `result_sha256` and Rule Evidence binding.
+This does not relax the parser's inventory, exit-code or exact-group checks.
+Accepted `tool_version` remains result-hash-bound; a changed tool version may
+require new verification even when the semantic inventory is identical.
+
+Integration coverage in `tests/test_sync_finalize.py` uses real isolated Git
+repositories, `plan_sync`, `verify_sync`, `finalize_sync`, Rule evaluation and
+the authoritative OSV parser. Only external OSV process transport is simulated;
+checkpoint/Evidence observation delegates to real validation. Scan counts must
+increase separately during verification and finalization, without assuming an
+exact total. Tests exercise unchanged non-generated file bytes, Git changes,
+HEAD/index and verified-state fingerprint under new vulnerabilities, network
+exceptions/reserved network exit, non-blocking severity and governed waiver;
+equivalent `PASS` allows dry-run preparation. No live scanner/network/push is
+used, and finalization neither stages nor commits in these tests. Disposable
+`.generated/**` reports are excluded from the repository identity comparison.
+
+Freshness uses authoritative re-execution at the current checkpoint, not a TTL,
+timestamp, database version, external-state identity or persistent result cache.
+No freshness fields are added to successful adapter results or Evidence.
+`uses_network=True` remains packaged `osv.scan@1` registry metadata, not a
+Rule/project override, result field or Evidence field. Adapter version,
+OSV semantic schema and `EVIDENCE_SCHEMA_VERSION` all remain `1`.
+
+Stage 9C2 dependency verification integrity hardening is complete for
+Stage 9 resolved dependency vulnerability verification. Completion is limited
+to resolved dependency vulnerability verification, not all security verification.
+Re-execution is an observation, not a guarantee that external state cannot change
+again after the current checkpoint. No new scanner, cache/offline DB lifecycle,
+remediation or Stage 10 behavior is included.
 
 ## Normative v1 field contract
 

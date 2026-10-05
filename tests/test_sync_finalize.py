@@ -821,3 +821,287 @@ def test_push_retry_after_commit_does_not_reopen_expired_temporary_waiver(
     assert pushed['push_result'] == 'pushed'
     assert pushed['commit_sha'] == committed['commit_sha']
     assert _git(remote, 'rev-parse', 'HEAD') == committed['commit_sha']
+
+
+def _setup_osv_verified(tmp_path, monkeypatch, *, severity='BLOCKING', waiver=False):
+    """Real SYNC lifecycle and OSV parser; only external process transport is fake."""
+    from project_system import osv_scan_adapter, sync_finalization
+
+    state = {
+        'payload': {'results': [{
+            'source': {'type': 'lockfile', 'path': 'pubspec.lock'},
+            'packages': [
+                {'package': {'ecosystem': 'Pub', 'name': name, 'version': '1.2.3'}}
+                for name in ('first', 'second')
+            ],
+        }]},
+        'exit_code': 0, 'stderr': '', 'pretty': False, 'error': None,
+        'tool_version': '2.3.3', 'scans': [], 'rechecks': [],
+    }
+    tool = tmp_path / 'osv-scanner.exe'
+    tool.write_bytes(b'external fixture executable\n')
+    real_which = shutil.which
+    monkeypatch.setattr(
+        osv_scan_adapter.shutil, 'which',
+        lambda name: str(tool) if name == 'osv-scanner' else real_which(name),
+    )
+
+    def run(arguments, **kwargs):
+        if arguments[1:] == ['--version']:
+            return subprocess.CompletedProcess(
+                arguments, 0, f"osv-scanner version: {state['tool_version']}\n", '',
+            )
+        assert arguments[1:3] == ['scan', 'source']
+        assert kwargs['shell'] is False
+        config = Path(arguments[arguments.index('--config') + 1])
+        assert config.is_file() and config.read_bytes() == b''
+        assert not config.resolve().is_relative_to((tmp_path / 'demo').resolve())
+        assert Path(kwargs['cwd']) == config.parent
+        state['scans'].append(tuple(arguments))
+        if state['error'] is not None:
+            raise state['error']
+        return subprocess.CompletedProcess(
+            arguments, state['exit_code'],
+            json.dumps(state['payload'], sort_keys=state['pretty'],
+                       indent=2 if state['pretty'] else None),
+            state['stderr'],
+        )
+
+    monkeypatch.setattr(osv_scan_adapter, 'run_process', run)
+    real_validate = sync_finalization.validate_report
+
+    def observe_recheck(root, **kwargs):
+        # Observation only: do not substitute Rule results, Evidence or adapters.
+        current = real_validate(root, **kwargs)
+        state['rechecks'].append((kwargs, current))
+        return current
+
+    monkeypatch.setattr(sync_finalization, 'validate_report', observe_recheck)
+
+    def configure(root, path, object_id):
+        (root / 'pubspec.lock').write_text('resolved lockfile fixture\n', encoding='utf-8')
+        exceptions = {}
+        if waiver:
+            _, decision_id = create_object(
+                root, 'decision', 'Governed dependency exception', 'security', 'project-owner',
+            )
+            exceptions['EXC-20260927-abcdef12'] = {
+                'rule_id': 'SEC-001', 'state': 'active', 'mode': 'permanent',
+                'reason': 'Isolated test of governed dependency waiver.',
+                'scope': {'paths': ['pubspec.lock']}, 'decision_id': decision_id,
+                'approved_by': 'project-owner', 'approved_at': '2026-09-27T10:00:00Z',
+            }
+        _write_rule_layer(root, {
+            'SEC-001': {
+                'title': 'Resolved dependency verification', 'status': 'active',
+                'category': 'security', 'description': 'Verify dependency vulnerability state.',
+                'verification': {'method': 'deterministic', 'checker': 'code.verification',
+                                 'parameters': {'adapter': 'osv.scan'}},
+                'enforcement': {'severity': severity,
+                                'checkpoints': ['project_validate', 'sync_verify']},
+                'exception_policy': 'decision_required' if waiver else 'forbidden',
+            },
+        }, exceptions)
+
+    values = _setup_plan(tmp_path, configure=configure)
+    root, path, _, head, _, pack_path, output, _ = values
+    scans_before_verify = len(state['scans'])
+    path.write_text(path.read_text(encoding='utf-8') + '\nExternally approved edit.\n',
+                    encoding='utf-8')
+    verify_sync(root, pack_path)
+    verified = json.loads((output / 'verification.json').read_text(encoding='utf-8'))
+    assert verified['verification_result'] == 'passed'
+    assert len(state['scans']) > scans_before_verify
+    binding = verified['rule_evidence_binding']
+    assert binding['checkpoint'] == 'sync_verify'
+    assert binding['verified_working_tree_fingerprint'] == verified['verification_fingerprint']
+    item, = binding['evidence']['results']
+    assert item['rule_id'] == 'SEC-001'
+    assert (item['raw_status'], item['effective_status']) == ('PASS', 'PASS')
+    assert item['details']['adapter_id'] == 'osv.scan'
+    assert item['details']['adapter_version'] == '1'
+    assert item['details']['evaluation_mode'] == 'project_wide_invalidation'
+    assert binding['evidence']['schema_version'] == 1
+    return root, head, pack_path, output, verified, state
+
+
+def _osv_vulnerability(state):
+    state['exit_code'] = 1
+    state['payload']['results'][0]['packages'][0].update(
+        vulnerabilities=[{'id': 'OSV-1', 'aliases': ['CVE-2026-1234'],
+                          'summary': 'raw advisory prose'}],
+        groups=[{'ids': ['OSV-1'], 'aliases': ['OSV-1', 'CVE-2026-1234']}],
+    )
+
+
+def _osv_repository_identity(root, pack_path):
+    """Both unchanged file bytes/Git state and the real verified-state digest."""
+    integrity = sync_verification._resolve_integrity_inputs(root, pack_path)
+    plan = integrity['plan']
+    changes = sync_verification.collect_git_changes(root, plan['base_commit'])
+    scope = sync_verification._scope_analysis(
+        root, changes, plan['allowed_write_set'], integrity['pack_path'],
+        plan['ignored_untracked_baseline'],
+    )
+    # Finalization reports are disposable .generated output, not verified inputs.
+    comparable_changes = dict(changes)
+    comparable_changes['ignored_untracked'] = [
+        path for path in changes['ignored_untracked']
+        if not sync_verification._is_generated(path)
+    ]
+    return (
+        sync_verification._snapshot_non_generated(root), comparable_changes,
+        sync_verification.verified_working_tree_state(root, plan, scope),
+        _git(root, 'rev-parse', 'HEAD'),
+        _git(root, 'diff', '--cached', '--binary'),
+        _git(root, 'diff', '--binary'),
+        _git(root, 'status', '--short', '--untracked-files=all'),
+    )
+
+
+def _osv_fresh_binding(verified, state):
+    options, current = state['rechecks'][-1]
+    assert options['rule_checkpoint'] == 'sync_verify'
+    assert options['rule_base_commit'] == verified['base_commit']
+    assert options['rule_evaluation_paths'] == tuple(verified['actual_changed_canonical_paths'])
+    return current, sync_verification.build_rule_evidence_binding(
+        current, verified['verification_fingerprint'],
+    )
+
+
+def _assert_osv_blocked(output, head, root):
+    report = _load_finalization(output)
+    assert report['state'] == 'failed'
+    assert report['commit_sha'] is None
+    assert report['commit_requested'] is False
+    assert report['commit_result'] == 'not_requested'
+    assert report['push_requested'] is False
+    assert report['push_result'] == 'not_requested'
+    assert _git(root, 'rev-parse', 'HEAD') == head
+    assert _git(root, 'diff', '--cached', '--name-only') == ''
+
+
+def test_osv_finalize_reexecutes_semantically_equivalent_pass(tmp_path, monkeypatch):
+    root, head, pack_path, output, verified, state = _setup_osv_verified(tmp_path, monkeypatch)
+    identity = _osv_repository_identity(root, pack_path)
+    assert identity[2] == (verified['verified_working_tree_state'], verified['verification_fingerprint'])
+    scans_before = len(state['scans'])
+    raw_before = json.dumps(state['payload'])
+    state['pretty'] = True
+    state['stderr'] = 'volatile transport diagnostic; not semantic evidence'
+    state['payload']['results'][0]['packages'].reverse()
+    # Equivalent empty advisory/group representations are already accepted by the parser.
+    for package in state['payload']['results'][0]['packages']:
+        package.update(vulnerabilities=[], groups=[])
+    assert json.dumps(state['payload'], sort_keys=True, indent=2) != raw_before
+
+    _, report = finalize_sync(root, pack_path)
+
+    assert len(state['scans']) > scans_before
+    current, rebuilt = _osv_fresh_binding(verified, state)
+    old_details = verified['rule_evidence_binding']['evidence']['results'][0]['details']
+    new_details = rebuilt['evidence']['results'][0]['details']
+    assert new_details['semantic_sha256'] == old_details['semantic_sha256']
+    assert new_details['result_sha256'] == old_details['result_sha256']
+    assert rebuilt == verified['rule_evidence_binding']
+    assert not any(level in {'BLOCKING', 'ERROR'} for level, _, _ in current.issues)
+    assert report['state'] == 'prepared'
+    assert report['rule_evidence_fingerprint'] == rebuilt['evidence']['evidence_fingerprint']
+    assert _load_finalization(output)['state'] == 'prepared'
+    assert report['commit_result'] == report['push_result'] == 'not_requested'
+    assert _osv_repository_identity(root, pack_path) == identity
+    assert _git(root, 'rev-parse', 'HEAD') == head
+
+
+@pytest.mark.parametrize('severity,waiver', [
+    ('BLOCKING', False), ('WARNING', False), ('INFO', False), ('BLOCKING', True),
+])
+def test_osv_finalize_rejects_new_vulnerability_with_unchanged_git_state(
+    tmp_path, monkeypatch, severity, waiver,
+):
+    root, head, pack_path, output, verified, state = _setup_osv_verified(
+        tmp_path, monkeypatch, severity=severity, waiver=waiver,
+    )
+    identity = _osv_repository_identity(root, pack_path)
+    assert identity[2] == (verified['verified_working_tree_state'], verified['verification_fingerprint'])
+    scans_before = len(state['scans'])
+    _osv_vulnerability(state)
+    reason = (
+        'current sync_verify Rules do not pass'
+        if severity == 'BLOCKING' and not waiver else 'Rule Evidence changed'
+    )
+
+    with pytest.raises(SyncFinalizeIntegrityError, match=reason + '.*sync verify again'):
+        finalize_sync(root, pack_path)
+
+    assert len(state['scans']) > scans_before
+    current, rebuilt = _osv_fresh_binding(verified, state)
+    item, = rebuilt['evidence']['results']
+    assert item['raw_status'] == 'FAIL'
+    assert item['effective_status'] == ('WAIVED' if waiver else 'FAIL')
+    assert item['details']['verification_status'] == 'FAIL'
+    assert item['details']['exit_code'] == 1
+    assert item['details']['findings'][0]['path'] == 'pubspec.lock'
+    assert item['exception_id'] == ('EXC-20260927-abcdef12' if waiver else None)
+    assert rebuilt != verified['rule_evidence_binding']
+    blocking = any(level in {'BLOCKING', 'ERROR'} for level, _, _ in current.issues)
+    assert blocking == (severity == 'BLOCKING' and not waiver)
+    assert _osv_repository_identity(root, pack_path) == identity
+    _assert_osv_blocked(output, head, root)
+
+
+@pytest.mark.parametrize('failure', ['exception', 'network_exit'])
+def test_osv_finalize_network_error_is_not_waivable_or_leaked(tmp_path, monkeypatch, failure):
+    # Even a pre-existing governed waiver and non-blocking severity cannot waive ERROR.
+    root, head, pack_path, output, verified, state = _setup_osv_verified(
+        tmp_path, monkeypatch, severity='WARNING', waiver=True,
+    )
+    identity = _osv_repository_identity(root, pack_path)
+    scans_before = len(state['scans'])
+    secret = 'SECRET-NETWORK-TOKEN https://private.example/?token=hidden'
+    if failure == 'exception':
+        state['error'] = OSError(secret)
+    else:
+        state.update(exit_code=129, payload=secret, stderr=secret)
+
+    with pytest.raises(SyncFinalizeIntegrityError, match='current sync_verify Rules do not pass') as caught:
+        finalize_sync(root, pack_path)
+
+    assert len(state['scans']) > scans_before
+    current, rebuilt = _osv_fresh_binding(verified, state)
+    item, = rebuilt['evidence']['results']
+    assert item['raw_status'] == item['effective_status'] == 'ERROR'
+    assert item['exception_id'] is None
+    assert rebuilt['evidence']['applied_exception_ids'] == []
+    assert any(level == 'ERROR' and location == 'SEC-001' for level, location, _ in current.issues)
+    assert rebuilt != verified['rule_evidence_binding']
+    exposed = str(caught.value) + json.dumps(rebuilt) + repr(current.issues)
+    exposed += ''.join((output / name).read_text(encoding='utf-8')
+                       for name in ('finalization.json', 'finalization.md'))
+    assert secret not in exposed
+    assert 'SECRET-NETWORK-TOKEN' not in exposed
+    assert 'private.example' not in exposed
+    assert _osv_repository_identity(root, pack_path) == identity
+    _assert_osv_blocked(output, head, root)
+
+
+def test_osv_finalize_binds_accepted_tool_version_even_with_same_semantics(tmp_path, monkeypatch):
+    root, head, pack_path, output, verified, state = _setup_osv_verified(tmp_path, monkeypatch)
+    identity = _osv_repository_identity(root, pack_path)
+    scans_before = len(state['scans'])
+    state['tool_version'] = '2.3.4'
+
+    with pytest.raises(SyncFinalizeIntegrityError, match='Rule Evidence changed.*sync verify again'):
+        finalize_sync(root, pack_path)
+
+    assert len(state['scans']) > scans_before
+    _, rebuilt = _osv_fresh_binding(verified, state)
+    old_details = verified['rule_evidence_binding']['evidence']['results'][0]['details']
+    item, = rebuilt['evidence']['results']
+    assert item['raw_status'] == 'PASS'
+    assert item['details']['tool_version'] == '2.3.4'
+    assert item['details']['semantic_sha256'] == old_details['semantic_sha256']
+    assert item['details']['result_sha256'] != old_details['result_sha256']
+    assert rebuilt != verified['rule_evidence_binding']
+    assert _osv_repository_identity(root, pack_path) == identity
+    _assert_osv_blocked(output, head, root)

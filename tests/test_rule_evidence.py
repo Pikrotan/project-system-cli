@@ -26,6 +26,57 @@ GIT_HEAD = "1" * 40
 BASE_COMMIT = "2" * 40
 
 
+def test_osv_actual_parser_evidence_is_stable_but_new_vulnerability_changes_binding(
+    tmp_path, monkeypatch,
+):
+    import json
+    import subprocess
+    from project_system import osv_scan_adapter
+
+    root = tmp_path / 'project'
+    root.mkdir()
+    (root / 'pubspec.lock').write_text('fixture\n', encoding='utf-8')
+    tool = tmp_path / 'osv-scanner.exe'
+    tool.write_text('fixture executable\n', encoding='utf-8')
+    monkeypatch.setattr(osv_scan_adapter.shutil, 'which', lambda *args: str(tool))
+    selected_rule = rule(checker='code.verification', parameters={'adapter': 'osv.scan'})
+    registry = rules_registry({'SEC-001': selected_rule})
+    ctx = context(root)
+    current = {'results': [{'source': {'type': 'lockfile', 'path': 'pubspec.lock'},
+                            'packages': [{'package': {'ecosystem': 'Pub', 'name': 'first', 'version': '1.0'}},
+                                         {'package': {'ecosystem': 'Pub', 'name': 'second', 'version': '1.0'}}]}]}
+    vulnerable = False
+    pretty = False
+
+    def run(argv, **kwargs):
+        if argv[1:] == ['--version']:
+            return subprocess.CompletedProcess(argv, 0, 'osv-scanner version: 2.3.3\n', '')
+        return subprocess.CompletedProcess(argv, 1 if vulnerable else 0,
+                                           json.dumps(current, sort_keys=pretty, indent=2 if pretty else None),
+                                           'volatile stderr' if pretty else '')
+
+    monkeypatch.setattr(osv_scan_adapter, 'run_process', run)
+
+    def evidence():
+        return build(root, registry=registry, ctx=ctx, results=evaluate_rules(registry, ctx))
+
+    first = evidence()
+    assert first.results[0].raw_status == 'PASS'
+    pretty = True
+    current['results'][0]['packages'].reverse()
+    second = evidence()
+    assert first.evidence_fingerprint == second.evidence_fingerprint
+    vulnerable = True
+    current['results'][0]['packages'][0].update(
+        vulnerabilities=[{'id': 'OSV-1', 'details': 'raw secret advisory'}],
+        groups=[{'ids': ['OSV-1'], 'aliases': ['OSV-1']}],
+    )
+    changed = evidence()
+    assert changed.results[0].raw_status == 'FAIL'
+    assert first.evidence_fingerprint != changed.evidence_fingerprint
+    assert 'raw secret advisory' not in rule_evidence_json(changed)
+
+
 def rule(
     *,
     method="deterministic",

@@ -70,9 +70,10 @@ class VerificationAdapterSpec:
     global_input_patterns: tuple[str, ...] = ()
     executes_project_code: bool = False
     uses_semantic_hash: bool = False
+    uses_network: bool = False
 
 
-from . import dart_analyze_adapter, dart_test_adapter
+from . import dart_analyze_adapter, dart_test_adapter, osv_scan_adapter
 
 
 VERIFICATION_ADAPTER_REGISTRY = MappingProxyType(
@@ -95,6 +96,15 @@ VERIFICATION_ADAPTER_REGISTRY = MappingProxyType(
             global_input_patterns=("**",),
             executes_project_code=True,
             uses_semantic_hash=True,
+        ),
+        "osv.scan": VerificationAdapterSpec(
+            adapter_id="osv.scan",
+            version="1",
+            implementation=osv_scan_adapter.run_osv_scan,
+            global_input_patterns=("**",),
+            executes_project_code=False,
+            uses_semantic_hash=True,
+            uses_network=True,
         ),
     }
 )
@@ -138,6 +148,11 @@ def _validated_adapter_spec(adapter_id):
     if type(spec.uses_semantic_hash) is not bool:
         raise VerificationAdapterError(
             f"Verification Adapter {adapter_id!r} uses_semantic_hash "
+            "must be a boolean"
+        )
+    if type(spec.uses_network) is not bool:
+        raise VerificationAdapterError(
+            f"Verification Adapter {adapter_id!r} uses_network "
             "must be a boolean"
         )
     if not isinstance(spec.global_input_patterns, tuple):

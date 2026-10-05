@@ -800,6 +800,119 @@ the parent timeout does not guarantee process-tree termination; environment and
 toolchain fingerprinting remain incomplete. Flutter/pytest/npm, coverage and
 selective dependency mapping are future stages.
 
+### Stage 9C1: resolved dependency vulnerability verification
+
+`osv.scan@1` is a packaged, cross-ecosystem `code.verification` adapter, not a
+Dart-only checker. Registry metadata declares `executes_project_code=False`,
+`uses_semantic_hash=True` and `uses_network=True`. `uses_network` is a strict
+boolean defaulting to `False` for existing adapters. It is packaged capability
+metadata, not a project parameter or a promise of network sandboxing. Existing
+Dart adapter contracts are unchanged; no new result/Evidence fields are needed.
+
+Supported exact filenames are `pubspec.lock`, `package-lock.json`,
+`pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, `uv.lock`, `poetry.lock`, `Pipfile.lock`,
+`pdm.lock`, and `pylock.toml`. Discovery recursively returns sorted canonical
+repository-relative regular files. It never follows symlinks/reparse points and
+fails closed on unsafe/ambiguous paths or unreadable non-excluded directories.
+Exclusions, matched case-insensitively, are `.git`, `.generated`, `.dart_tool`,
+`.pub-cache`, `build`, `node_modules`, `.venv`, `venv`, `__pycache__`, `vendor`,
+`dist`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.cache`, `.tox`, `.nox`,
+and `coverage`. Excluded subtrees have no dependency authority in this adapter.
+Manifests and `requirements.txt` are not vulnerability inputs in v1.
+
+Without dependency mapping, every non-empty bounded project change escalates to
+`project_wide_invalidation`; `None` runs project-wide. Empty bounded input, or
+trusted discovery finding no supported lockfiles, is `NOT_APPLICABLE` without
+launching OSV. Passing explicit lockfiles but receiving no packages is `ERROR`.
+
+The adapter resolves an installed `osv-scanner` executable outside the project,
+probes `--version`, and accepts only one strictly parsed stable version line
+in the range **`>=2.3.3,<3.0.0`**. Prerelease/dev strings are rejected. The floor
+binds complete inventory (`--all-packages` fixed in 2.3.0), `bun.lock` support
+(2.3.2) and `pylock.toml` extraction (2.3.3); unsupported versions produce
+`VerificationAdapterError`/Rule `ERROR` before scan, with no weaker fallback.
+It runs from an adapter-owned temporary directory outside the project,
+with an empty `osv-scanner.toml` override. Config and directory are cleaned on
+success and failure; a project-controlled temporary root inside the project is
+rejected before creation. The fixed scan argv is:
+
+```text
+<external-osv-scanner> scan source --format=json --all-packages --no-resolve
+  --no-call-analysis=all --all-vulns --config <temporary-empty-config>
+  -L <absolute-discovered-lockfile> ...
+```
+
+No directory scan, project flags, remediation, package manager, call analysis,
+license policy or severity threshold is enabled. `--all-vulns` prevents
+uncalled/unimportant vulnerability filtering from overriding the policy that
+any known vulnerability fails. `shell=False`; the version probe has a 10-second
+timeout and 64 KiB capture limit per stream; scan has a 300-second timeout and
+16 MiB capture limit per stream. Supported binaries failing these fixed flags
+produce execution errors rather than falling back to weaker scan semantics.
+Comma-containing lockfile paths (including ancestors), parser delimiters,
+control characters and noncanonical paths are rejected, not forwarded as flags.
+
+JSON is untrusted: duplicate keys/nonstandard numeric constants, unknown result
+envelopes, malformed inventories and contradictory groups are rejected. Every
+source must be a discovered explicit lockfile, each source must appear once with
+non-empty packages, and full discovered source coverage is required. Package
+ecosystem/name/resolved-version and advisory/group IDs must be bounded normalized
+identity tokens. Each advisory's semantic identity is its ID union its normalized
+aliases. Group IDs must partition the full advisory ID set; a group's normalized
+aliases must equal exactly the union of those advisory identities, including its
+own IDs. No alias may belong to two distinct groups. Repeated equivalent groups
+normalize deterministically; duplicate advisory IDs are accepted only with equal
+semantic alias identities, otherwise `ERROR`. Contradictory/missing/extra aliases
+are integrity `ERROR`, not vulnerability `FAIL`.
+
+Upstream `PackageSource.experimental_pes` is recognized: empty lists are accepted,
+non-empty signals are unsupported capability `ERROR`. Invented
+`experimental_annotations` is rejected even when empty. Actual `PackageInfo`
+fields are used: `image_origin_details` (only absent/null accepted),
+`os_package_name` and `commit` (only absent/null/empty accepted), and `deprecated`
+(only absent/boolean false accepted). Invented `image_origin` is rejected.
+Deprecated-package scanning is not enabled and no flags are added.
+Unsupported commit/image/license/generic finding structures fail closed. Advisory prose is
+not evidence and is not copied into failure reasons or findings. File metadata
+and discovery are rechecked around execution to detect observable input drift;
+this is not an OS-level filesystem snapshot or adversarial race guarantee.
+
+`PASS` requires complete package coverage, no known vulnerabilities and exit 0.
+`FAIL` requires proved vulnerabilities and exit 1, with concrete source-lockfile
+findings (`ERROR` severity, `osv.vulnerability`, bounded package/version/ID
+messages). All other codes, including reserved result codes, 127 general error,
+128 no packages and 129 network error, are `ERROR`, never waivable `FAIL`.
+Missing executable, unsupported version, timeout, capture overflow, network or
+parser failure also produce sanitized `VerificationAdapterError`/Rule `ERROR`.
+
+Semantic schema v1 binds sorted discovered lockfile inventory, complete sorted
+package inventory (source/ecosystem/name/version, preserving multiplicity) and
+vulnerability IDs/group IDs/aliases per package. JSON/result/package/group order,
+advisory prose/timestamps/references and stdout/stderr do not affect the semantic
+digest. Raw execution hashes remain at the adapter boundary and are validated;
+stable result/Evidence hashes use the existing semantic contract. OSV version,
+normalized status and findings remain bound by the common result hash.
+
+This is mutable, network-backed external security state: new vulnerability
+identities between verify and finalize are meaningful Evidence drift. Normal
+SYNC rechecks remain authoritative; there is no finalization bypass or forever
+cached PASS. Governed Project System Rule Exceptions remain the only policy
+owner. Project-local OSV ignores/configuration are overridden, not authoritative.
+
+Stage 9C1 does not install OSV, cryptographically attest tool binaries, manage
+offline databases, scan arbitrary manifests/version ranges, upgrade dependencies,
+perform secret/SAST/malware/license/container scanning, generate SBOMs, apply
+severity thresholds or selective dependency mapping. Tool/environment trust,
+OSV API availability, unsupported/unresolvable lockfile entries and parser
+compatibility remain operational constraints. Passing a lockfile scan proves
+known-vulnerability lookup for resolved inventory, not complete software security.
+
+Upstream contracts: [OSV v2 source command](https://github.com/google/osv-scanner/blob/v2.3.3/cmd/osv-scanner/scan/source/command.go),
+[fixed flags](https://github.com/google/osv-scanner/blob/v2.3.3/cmd/osv-scanner/internal/helper/flags.go),
+[JSON models](https://github.com/google/osv-scanner/blob/v2.3.3/pkg/models/results.go),
+[config override](https://google.github.io/osv-scanner/configuration/) and
+[output/return codes](https://google.github.io/osv-scanner/output/).
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.

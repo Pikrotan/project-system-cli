@@ -913,6 +913,90 @@ Upstream contracts: [OSV v2 source command](https://github.com/google/osv-scanne
 [config override](https://google.github.io/osv-scanner/configuration/) and
 [output/return codes](https://google.github.io/osv-scanner/output/).
 
+### Stage 9C2: dependency verification integrity hardening
+
+Stage 9C2A hardens `osv.scan@1` inside the existing adapter. The adapter version,
+successful result contract, Rule Evidence and semantic schema v1 are unchanged;
+there are no new project parameters, scanners, flags or lifecycle bypasses.
+
+**Content-bound inputs.** Each lockfile state contains its canonical relative
+path, portable filesystem identity (`st_dev`, `st_ino` as available on the host),
+size, nanosecond mtime and streamed SHA-256 of its bytes. T0 follows authoritative
+discovery; T1 follows the version probe and precedes scan; T2 follows scan and
+precedes acceptance of output. T1/T2 repeat authoritative discovery of the whole
+supported inventory, not just the original paths. Added/removed lockfiles,
+replacement, unsafe containment/reparse changes and content drift, including
+same-size mutation with restored mtime, produce `VerificationAdapterError`/Rule
+`ERROR`, never a waivable vulnerability `FAIL`.
+
+Hashing is itself a fail-closed boundary: safe ancestor/path lstat before open;
+binary read-only no-follow open; handle fstat must identify the same regular,
+non-reparse object as the path observation; stream in fixed 1 MiB chunks; repeat
+handle fstat and safe path lstat after reading. Identity/size/mtime must agree
+throughout and the number of bytes read must equal the observed size. Handles
+are closed on success and error. POSIX uses `O_NOFOLLOW` and `O_NONBLOCK` (to avoid
+a raced FIFO blocking before its rejection). Windows uses `CreateFileW` with
+`FILE_FLAG_OPEN_REPARSE_POINT` and rejects reparse handle attributes before any
+content read; handles/descriptors are non-inheritable. No unsafe open fallback
+is provided if the necessary primitive is unavailable. Ancestor components are
+checked before/after reading; this is not atomic path resolution or a snapshot.
+
+**Executable consistency.** PATH lookup and canonical external executable
+resolution remain unchanged. The canonical regular executable's path,
+identity/size/mtime and streamed binary SHA-256 are compared at E0 before version
+probe, E1 immediately after it, E2 immediately before scan and E3 immediately
+after scan. Observable executable content or identity drift is `ERROR`.
+This establishes that *the same observable executable was used throughout this
+verification run*. It does not establish authentic/trusted publisher software.
+There is no signature/publisher verification, allowlisted digest, installation
+or cryptographic binary authenticity attestation.
+
+**Temporary policy consistency.** The adapter-owned temporary directory is
+resolved outside the project, must remain a real non-reparse directory and
+retains its observed directory identity. Config is exclusively created by the
+adapter, never overwrites a pre-existing file, and must be a regular non-reparse
+file whose authoritative content is exactly empty bytes. Config identity, size,
+mtime and empty-content digest are compared at C0 after creation, C1 before scan
+and C2 after scan. Change/replacement/deletion is `ERROR`. Explicit `--config`
+still removes project-local OSV configuration/ignores from authority. Temporary
+cleanup remains active on success, parser/version error, timeout, process
+exception and integrity error while directory ownership is intact. Cleanup
+checks saved directory identity before removal, refuses observed replacements
+and does not leave an unconditional finalizer which might delete a foreign
+directory later. No permanent project artifacts are created.
+
+**Exact groups.** The adapter reconstructs connected components of advisory
+identities `{id} union normalized aliases` independently of reported OSV groups.
+Two advisories are adjacent when their identities intersect; transitive overlap
+therefore connects them too. Each expected group has sorted component advisory
+IDs and the sorted union of their identities. The normalized reported group set
+must equal exactly these components. Splitting connected advisories, merging
+disconnected ones, missing/extra aliases or IDs and conflicting duplicate
+identities are `ERROR`. Established equivalent duplicate advisory/group rows
+still normalize deterministically and ordering/prose remain non-semantic.
+
+**Runtime integrity is not semantic Evidence.** Runtime hashes and metadata
+decide whether a result may be accepted. None of lockfile/binary/config content
+hashes, inode/mtime, temp paths or timestamps enters `semantic_sha256` or Rule
+Evidence. The digest continues to bind only lockfile inventory, package inventory
+and resolved versions, advisory IDs and normalized groups/aliases. Stable runs
+establishing the same semantic result retain the same semantic/result hash even
+when runtime state differs between runs. `NOT_APPLICABLE`, `PASS`, vulnerability
+`FAIL` and infrastructure/integrity `ERROR` semantics remain those of Stage 9C1.
+
+**Limits and remaining stage.** This is not an OS-level snapshot, filesystem
+transaction, OS sandbox or binary authenticity attestation. Transient mutation
+fully restored between observable checks can remain undetected, including
+concurrent changes during a streamed read which leave no observable metadata
+contradiction. Portable identity fields depend on host filesystem support;
+hashing costs are linear in input/binary bytes and are not given a separate
+wall-clock deadline. Cleanup cannot guarantee recovery of artifacts moved away
+by an external actor, and fails closed on observed unsafe paths rather than
+following them. OSV remains external and network-backed, without offline DB,
+network cache, Evidence TTL, remediation or selective dependency mapping.
+Stage 9C2 is **not fully closed**: 9C2B still needs explicit mutable network-state
+and SYNC regression coverage.
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.

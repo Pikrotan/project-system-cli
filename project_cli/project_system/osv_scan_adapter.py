@@ -5,6 +5,7 @@ explicit files, not a recursive directory target or project-controlled options.
 """
 
 from dataclasses import replace
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -31,6 +32,7 @@ OSV_TIMEOUT_SECONDS = 300
 OSV_MAX_CAPTURE_BYTES = 16 * 1024 * 1024
 OSV_VERSION_TIMEOUT_SECONDS = 10
 OSV_VERSION_MAX_CAPTURE_BYTES = 64 * 1024
+HASH_CHUNK_BYTES = 1024 * 1024
 _VERSION_RE = re.compile(r"osv-scanner version: (2\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))")
 _NAME_RE = re.compile(r"[@A-Za-z0-9][@A-Za-z0-9._/+!~%=-]*")
 _VERSION_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+!~:-]*")
@@ -90,6 +92,8 @@ def _root(value):
 
 
 def _safe_file(root, relative):
+    if _root(root) != root:
+        _error("OSV dependency root containment changed")
     try:
         if canonical_rule_path(relative, "OSV lockfile", pattern=False) != relative:
             _error("OSV lockfile path is not canonical")
@@ -148,12 +152,138 @@ def discover_lockfiles(project_root):
     return tuple(sorted(found))
 
 
+def _regular_stat_state(info):
+    if (not stat.S_ISREG(info.st_mode)
+            or getattr(info, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+        _error("OSV integrity input is not a regular non-reparse file")
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+
+def _windows_read_fd(path):
+    # Python's os.open has no O_NOFOLLOW on Windows. Open the reparse object,
+    # not its target, then reject it using handle stat before reading any bytes.
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                       wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    # GENERIC_READ, share read/write/delete, OPEN_EXISTING, OPEN_REPARSE_POINT.
+    handle = create(str(path), 0x80000000, 7, None, 3, 0x00200000, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise OSError(ctypes.get_last_error(), "cannot open OSV integrity input")
+    try:
+        return msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY | os.O_NOINHERIT)
+    except BaseException:
+        close(handle)
+        raise
+
+
+def _open_binary(path):
+    if os.name == "nt":
+        fd = _windows_read_fd(path)
+    else:
+        if not hasattr(os, "O_NOFOLLOW"):
+            _error("OSV integrity requires a no-follow file open primitive")
+        # NONBLOCK avoids hanging on a raced FIFO before fstat can reject it.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        return os.fdopen(fd, "rb", buffering=0)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _content_state(path, path_stat):
+    """Bind streamed bytes to consistent path/handle observations, not a snapshot."""
+    try:
+        before = _regular_stat_state(path_stat())
+        digest = hashlib.sha256()
+        size = 0
+        with _open_binary(path) as stream:
+            opened = _regular_stat_state(os.fstat(stream.fileno()))
+            if opened != before:
+                _error("OSV integrity input changed while being opened")
+            while chunk := stream.read(HASH_CHUNK_BYTES):
+                size += len(chunk)
+                if size > before[2]:
+                    _error("OSV integrity input changed while being read")
+                digest.update(chunk)
+            after = _regular_stat_state(os.fstat(stream.fileno()))
+            current = _regular_stat_state(path_stat())
+            if after != before or current != before or size != before[2]:
+                _error("OSV integrity input changed while being read")
+        return (*before, digest.hexdigest())
+    except OSError:
+        _error("OSV integrity input cannot be read reliably")
+
+
 def _file_state(root, lockfiles):
-    states = []
-    for relative in lockfiles:
-        _, info = _safe_file(root, relative)
-        states.append((relative, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns))
-    return tuple(states)
+    return tuple((relative, *_content_state(
+        root / relative, lambda: _safe_file(root, relative)[1],
+    )) for relative in lockfiles)
+
+
+def _regular_path_stat(path):
+    if not path.is_absolute() or _root(path.parent) != path.parent:
+        _error("OSV integrity path containment changed")
+    info = _lstat(path)
+    _regular_stat_state(info)
+    try:
+        if path.resolve(strict=True) != path:
+            _error("OSV integrity path containment changed")
+    except (OSError, RuntimeError):
+        _error("OSV integrity path cannot be resolved reliably")
+    return info
+
+
+def _external_state(path):
+    return (str(path), *_content_state(path, lambda: _regular_path_stat(path)))
+
+
+def _directory_state(directory):
+    if _root(directory) != directory:
+        _error("OSV temporary directory containment changed")
+    info = _lstat(directory)
+    if not stat.S_ISDIR(info.st_mode):
+        _error("OSV temporary directory is not a regular directory")
+    return str(directory), info.st_dev, info.st_ino
+
+
+def _config_state(config, directory_state):
+    if _directory_state(config.parent) != directory_state:
+        _error("OSV temporary directory identity changed")
+    state = _external_state(config)
+    if _directory_state(config.parent) != directory_state:
+        _error("OSV temporary directory identity changed")
+    if state[3] != 0 or state[-1] != _sha256(""):
+        _error("OSV temporary config must remain empty")
+    return state
+
+
+@contextmanager
+def _temporary_directory(temp_root):
+    # Cleanup must not adopt a different real directory substituted at this
+    # pathname. Do not schedule an unconditional GC finalizer for that path.
+    directory = Path(tempfile.mkdtemp(prefix="project-system-osv-", dir=temp_root))
+    state = None
+    try:
+        state = _directory_state(directory)
+        yield str(directory), state
+    finally:
+        if state is None or _directory_state(directory) != state:
+            _error("OSV temporary directory ownership changed; cleanup refused")
+        try:
+            shutil.rmtree(directory)
+        except OSError:
+            _error("OSV temporary directory could not be cleaned safely")
 
 
 def _executable(root):
@@ -263,6 +393,34 @@ def _source_path(root, value, lockfiles):
     return relative
 
 
+def _expected_groups(advisory_identities):
+    # Alias-indexed DFS: avoid comparing every advisory pair. Every shared
+    # identity token adds an undirected edge; traversal order is non-semantic.
+    by_alias = {}
+    for identity, aliases in advisory_identities.items():
+        for alias in aliases:
+            by_alias.setdefault(alias, set()).add(identity)
+    remaining = set(advisory_identities)
+    groups = set()
+    for seed in sorted(advisory_identities):
+        if seed not in remaining:
+            continue
+        pending = [seed]
+        ids, aliases = set(), set()
+        while pending:
+            identity = pending.pop()
+            if identity not in remaining:
+                continue
+            remaining.remove(identity)
+            ids.add(identity)
+            for alias in advisory_identities[identity]:
+                if alias not in aliases:
+                    aliases.add(alias)
+                    pending.extend(by_alias[alias].intersection(remaining))
+        groups.add((tuple(sorted(ids)), tuple(sorted(aliases))))
+    return groups
+
+
 def _parse(root, text, lockfiles, exit_code):
     from .verification_adapters import VerificationFinding
 
@@ -365,6 +523,8 @@ def _parse(root, text, lockfiles, exit_code):
                 grouped_aliases.update(aliases)
             if grouped != vuln_ids:
                 _error("OSV-Scanner vulnerability groups contradict advisory identities")
+            if groups != _expected_groups(advisory_identities):
+                _error("OSV-Scanner groups contradict advisory connected components")
             vulnerability_inventory.append({
                 **package,
                 "ids": sorted(vuln_ids),
@@ -416,32 +576,46 @@ def run_osv_scan(project_root, evaluation_paths, evaluation_mode):
         return _result(evaluation_mode)
     before = _file_state(root, lockfiles)
     tool = _executable(root)
+    executable_state = _external_state(Path(tool))  # E0: before version probe.
     # Do not even create an adapter-owned directory inside a project if TMP was
     # configured there. No permanent or .generated policy file is introduced.
     try:
-        temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+        temp_root = _root(Path(tempfile.gettempdir()))
     except (OSError, RuntimeError):
         _error("OSV temporary config location cannot be resolved")
     if temp_root.is_relative_to(root):
         _error("OSV temporary config must be outside the project")
-    with tempfile.TemporaryDirectory(prefix="project-system-osv-", dir=temp_root) as directory:
+    with _temporary_directory(temp_root) as (directory, directory_state):
         config = Path(directory) / "osv-scanner.toml"
-        config.write_bytes(b"")
+        # Exclusive creation: never overwrite even an empty pre-existing file.
+        with config.open("xb"):
+            pass
+        config_state = _config_state(config, directory_state)  # C0.
         version = _tool_version(tool, directory)
-        # Re-check paths after the external version probe and before scan.
-        if before != _file_state(root, lockfiles):
+        if _external_state(Path(tool)) != executable_state:  # E1.
+            _error("OSV executable changed during verification")
+        # T1 binds the complete discovery inventory, not just the old paths.
+        if discover_lockfiles(root) != lockfiles or before != _file_state(root, lockfiles):
             _error("OSV dependency inputs changed during verification")
         argv = [tool, "scan", "source", "--format=json", "--all-packages", "--no-resolve",
                 "--no-call-analysis=all", "--all-vulns", "--config", str(config)]
         for relative in lockfiles:
             argv.extend(["-L", str(root / relative)])
+        if _config_state(config, directory_state) != config_state:  # C1.
+            _error("OSV temporary config changed during verification")
+        if _external_state(Path(tool)) != executable_state:  # E2.
+            _error("OSV executable changed during verification")
         result = _run(argv, directory)
+        if _external_state(Path(tool)) != executable_state:  # E3.
+            _error("OSV executable changed during verification")
+        if discover_lockfiles(root) != lockfiles or before != _file_state(root, lockfiles):  # T2.
+            _error("OSV dependency inputs changed during verification")
+        if _config_state(config, directory_state) != config_state:  # C2.
+            _error("OSV temporary config changed during verification")
         # Only 0/1 currently have defined successful result semantics. Reserved
         # codes are not evidence of a vulnerability; 127/128/129 etc are ERROR.
         if result.returncode not in {0, 1}:
             _error("OSV-Scanner did not establish a trustworthy scan result")
-        if discover_lockfiles(root) != lockfiles or before != _file_state(root, lockfiles):
-            _error("OSV dependency inputs changed during verification")
         findings, semantic = _parse(root, result.stdout, lockfiles, result.returncode)
         return _result(
             evaluation_mode, lockfiles=lockfiles, tool_version=version,

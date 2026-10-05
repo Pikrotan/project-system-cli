@@ -1,8 +1,11 @@
 import copy
 from dataclasses import replace
+import hashlib
 import importlib
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 from types import SimpleNamespace
 
@@ -39,8 +42,8 @@ def package(name='example', version='1.2.3', ecosystem='Pub', ids=()):
             {'id': item, 'summary': 'advisory prose', 'modified': '2026-01-01'}
             for item in ids
         ]
-        value['groups'] = [{'ids': list(ids), 'aliases': list(ids),
-                            'max_severity': 'arbitrary presentation'}]
+        value['groups'] = [{'ids': [item], 'aliases': [item],
+                            'max_severity': 'arbitrary presentation'} for item in ids]
     return value
 
 
@@ -441,7 +444,8 @@ def alias_package():
     value = package(ids=('GHSA-example', 'CVE-2026-1234'))
     value['vulnerabilities'][0]['aliases'] = ['CVE-2026-1234', 'OSV-alias']
     value['vulnerabilities'][1]['aliases'] = ['GHSA-example', 'OSV-alias']
-    value['groups'][0]['aliases'] = ['OSV-alias', 'GHSA-example', 'CVE-2026-1234']
+    value['groups'] = [{'ids': ['GHSA-example', 'CVE-2026-1234'],
+                       'aliases': ['OSV-alias', 'GHSA-example', 'CVE-2026-1234']}]
     return value
 
 
@@ -680,3 +684,580 @@ def test_project_cannot_override_packaged_network_or_execution_policy(root, adap
 
     assert checker_contract_messages('code.verification', {'adapter': adapter_id, 'uses_network': False})
     assert checker_contract_messages('code.verification', {'adapter': adapter_id, 'flags': ['--config=local']})
+
+
+def mutate_file(path, mutation):
+    before = path.stat()
+    if mutation == 'remove':
+        path.unlink()
+        return
+    if mutation == 'replace':
+        replacement = path.with_name(path.name + '.replacement')
+        replacement.write_bytes(path.read_bytes())
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        replacement.replace(path)
+        assert path.stat().st_ino != before.st_ino
+        return
+    changed = b'X' * before.st_size
+    if mutation == 'different_size':
+        changed += b'longer'
+    path.write_bytes(changed)
+    if mutation == 'restored_mtime':
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        assert path.stat().st_mtime_ns == before.st_mtime_ns
+        assert path.stat().st_size == before.st_size
+
+
+@pytest.mark.parametrize('checkpoint', ['version', 'scan'])
+@pytest.mark.parametrize('mutation', ['same_size', 'restored_mtime', 'replace', 'remove', 'add'])
+def test_9c2_lockfile_checkpoint_integrity(root, monkeypatch, checkpoint, mutation):
+    lock = write(root)
+    calls, _ = fake_process(monkeypatch, root, output())
+    adapter = module()
+    original = adapter.run_process
+    mutations = []
+
+    def run(argv, **kwargs):
+        result = original(argv, **kwargs)
+        if (argv[1:] == ['--version']) == (checkpoint == 'version'):
+            if mutation == 'add':
+                write(root, 'new/uv.lock')
+            else:
+                mutate_file(lock, mutation)
+            mutations.append(mutation)
+        return result
+
+    monkeypatch.setattr(adapter, 'run_process', run)
+    assert outcome(root).raw_status == 'ERROR'
+    assert mutations == [mutation]
+    assert len(calls) == (1 if checkpoint == 'version' else 2)
+    assert not Path(calls[0][1]['cwd']).exists()
+
+
+@pytest.mark.parametrize('checkpoint', ['version', 'scan'])
+@pytest.mark.parametrize('mutation', ['different_size', 'same_size', 'restored_mtime', 'replace', 'remove'])
+def test_9c2_executable_checkpoint_integrity(root, monkeypatch, checkpoint, mutation):
+    write(root)
+    calls, tool = fake_process(monkeypatch, root, output())
+    adapter = module()
+    original = adapter.run_process
+    mutations = []
+
+    def run(argv, **kwargs):
+        result = original(argv, **kwargs)
+        if (argv[1:] == ['--version']) == (checkpoint == 'version'):
+            mutate_file(tool, mutation)
+            mutations.append(mutation)
+        return result
+
+    monkeypatch.setattr(adapter, 'run_process', run)
+    assert outcome(root).raw_status == 'ERROR'
+    assert mutations == [mutation]
+    assert len(calls) == (1 if checkpoint == 'version' else 2)
+    assert not Path(calls[0][1]['cwd']).exists()
+
+
+@pytest.mark.parametrize('checkpoint', ['version', 'scan'])
+@pytest.mark.parametrize('mutation', ['content', 'replace', 'remove'])
+def test_9c2_temp_config_checkpoint_integrity_and_cleanup(root, monkeypatch, checkpoint, mutation):
+    write(root)
+    calls, _ = fake_process(monkeypatch, root, output())
+    adapter = module()
+    original = adapter.run_process
+    mutations = []
+
+    def run(argv, **kwargs):
+        # Do not let the test transport itself reject a changed config: the
+        # production integrity boundary, not a fake-process assertion, must fail.
+        if argv[1:] == ['--version']:
+            result = original(argv, **kwargs)
+        else:
+            calls.append((argv, kwargs))
+            result = subprocess.CompletedProcess(argv, 0, json.dumps(output()), '')
+        if (argv[1:] == ['--version']) == (checkpoint == 'version'):
+            config = Path(kwargs['cwd']) / 'osv-scanner.toml'
+            if mutation == 'content':
+                config.write_bytes(b'[[IgnoredVulns]]\nid="OSV-hidden"\n')
+            else:
+                mutate_file(config, mutation)
+            mutations.append(mutation)
+        return result
+
+    monkeypatch.setattr(adapter, 'run_process', run)
+    assert outcome(root).raw_status == 'ERROR'
+    assert mutations == [mutation]
+    assert len(calls) == (1 if checkpoint == 'version' else 2)
+    directory = Path(calls[0][1]['cwd'])
+    assert not directory.exists() and not (directory / 'osv-scanner.toml').exists()
+
+
+def stat_with(info, **changes):
+    values = {key: getattr(info, key) for key in (
+        'st_mode', 'st_dev', 'st_ino', 'st_size', 'st_mtime_ns',
+    )}
+    values['st_file_attributes'] = getattr(info, 'st_file_attributes', 0)
+    return SimpleNamespace(**{**values, **changes})
+
+
+@pytest.mark.parametrize('target', ['lockfile', 'executable', 'config', 'directory'])
+@pytest.mark.parametrize('checkpoint', ['version', 'scan'])
+def test_9c2_checkpoint_reparse_points_fail_closed(root, monkeypatch, target, checkpoint):
+    lock = write(root)
+    calls, tool = fake_process(monkeypatch, root, output())
+    adapter = module()
+    original_run, original_lstat = adapter.run_process, adapter._lstat
+    unsafe = None
+
+    def run(argv, **kwargs):
+        nonlocal unsafe
+        result = original_run(argv, **kwargs)
+        if (argv[1:] == ['--version']) == (checkpoint == 'version'):
+            directory = Path(kwargs['cwd'])
+            unsafe = {'lockfile': lock, 'executable': tool,
+                      'config': directory / 'osv-scanner.toml', 'directory': directory}[target]
+        return result
+
+    def lstat(path):
+        nonlocal unsafe
+        if Path(path) == unsafe:
+            unsafe = None  # Simulated checkpoint contradiction, not a real link.
+            adapter._error('OSV integrity path is a Windows reparse point')
+        return original_lstat(path)
+
+    monkeypatch.setattr(adapter, 'run_process', run)
+    # Model the established reparse-rejecting boundary, not global os.lstat:
+    # cleanup must re-inspect the actual owned directory, not fictitious data.
+    monkeypatch.setattr(adapter, '_lstat', lstat)
+    assert outcome(root).raw_status == 'ERROR'
+    assert len(calls) == (1 if checkpoint == 'version' else 2)
+    assert not Path(calls[0][1]['cwd']).exists()
+
+
+@pytest.mark.parametrize('target', ['lockfile', 'executable', 'config'])
+def test_9c2_real_symlink_replacement_is_rejected(root, monkeypatch, target):
+    lock = write(root)
+    calls, tool = fake_process(monkeypatch, root, output())
+    outside = write(root.parent, 'outside/target')
+    probe = root.parent / 'symlink-probe'
+    try:
+        probe.symlink_to(outside)
+    except OSError:
+        pytest.skip('symlink creation unavailable')
+    probe.unlink()
+    adapter = module()
+    original = adapter.run_process
+
+    def run(argv, **kwargs):
+        if argv[1:] == ['--version']:
+            result = original(argv, **kwargs)
+            path = {'lockfile': lock, 'executable': tool,
+                    'config': Path(kwargs['cwd']) / 'osv-scanner.toml'}[target]
+            path.unlink()
+            path.symlink_to(outside)
+            return result
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, json.dumps(output()), '')
+
+    monkeypatch.setattr(adapter, 'run_process', run)
+    assert outcome(root).raw_status == 'ERROR'
+    assert len(calls) == 1
+    assert not Path(calls[0][1]['cwd']).exists()
+    assert outside.read_text(encoding='utf-8') == 'fixture lockfile\n'
+
+
+def test_9c2_file_state_binds_content_even_with_restored_metadata(root):
+    lock = write(root)
+    first = module()._file_state(root, ('pubspec.lock',))
+    original = lock.read_bytes()
+    assert first[0][0] == 'pubspec.lock'
+    assert hashlib.sha256(original).hexdigest() in first[0]
+    mutate_file(lock, 'restored_mtime')
+    second = module()._file_state(root, ('pubspec.lock',))
+    assert first != second
+    assert first[0][1:5] == second[0][1:5]
+
+
+def test_9c2_hashing_is_streamed_in_bounded_chunks(root, monkeypatch):
+    lock = write(root)
+    content = b'x' * (3 * 1024 * 1024 + 17)
+    lock.write_bytes(content)
+    adapter = module()
+    original_fdopen = adapter.os.fdopen
+    reads, streams = [], []
+
+    class Reader:
+        def __init__(self, stream):
+            self.stream = stream
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            self.stream.close()
+        def fileno(self):
+            return self.stream.fileno()
+        def read(self, size):
+            assert 0 < size <= 1024 * 1024
+            reads.append(size)
+            return self.stream.read(size)
+
+    def fdopen(*args, **kwargs):
+        stream = original_fdopen(*args, **kwargs)
+        streams.append(stream)
+        return Reader(stream)
+
+    monkeypatch.setattr(adapter.os, 'fdopen', fdopen)
+    monkeypatch.setattr(Path, 'read_bytes', lambda *a: pytest.fail('unbounded file read'))
+    state = adapter._file_state(root, ('pubspec.lock',))
+    assert hashlib.sha256(content).hexdigest() in state[0]
+    assert len(reads) >= 5 and all(stream.closed for stream in streams)
+
+
+@pytest.mark.parametrize('contradiction', ['opened_identity', 'opened_nonregular',
+                                         'opened_reparse', 'after_read_metadata'])
+def test_9c2_open_handle_stat_contradictions_fail_closed(root, monkeypatch, contradiction):
+    write(root)
+    adapter = module()
+    original = adapter.os.fstat
+    calls = []
+
+    def fstat(fd):
+        info = original(fd)
+        calls.append(fd)
+        if contradiction == 'opened_identity':
+            return stat_with(info, st_ino=info.st_ino + 1)
+        if contradiction == 'opened_nonregular':
+            return stat_with(info, st_mode=stat.S_IFIFO)
+        if contradiction == 'opened_reparse':
+            return stat_with(info, st_file_attributes=0x400)
+        if len(calls) == 2:
+            return stat_with(info, st_mtime_ns=info.st_mtime_ns + 1)
+        return info
+
+    monkeypatch.setattr(adapter.os, 'fstat', fstat)
+    with pytest.raises(adapters.VerificationAdapterError):
+        adapter._file_state(root, ('pubspec.lock',))
+    assert calls
+
+
+@pytest.mark.parametrize('mutation', ['replace_before_fstat', 'replace_during_read',
+                                     'size_during_read', 'read_error'])
+def test_9c2_hashing_race_or_read_error_closes_handle(root, monkeypatch, mutation):
+    lock = write(root)
+    adapter = module()
+    original_fdopen = adapter.os.fdopen
+    streams = []
+    mutations = []
+
+    def mutate(selected):
+        try:
+            mutate_file(lock, selected)
+        except PermissionError:
+            if selected != 'replace':
+                raise
+            pytest.skip('filesystem forbids replacement while the read handle is open')
+        mutations.append(mutation)
+
+    class Reader:
+        def __init__(self, stream):
+            self.stream = stream
+            self.changed = False
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            self.stream.close()
+        def fileno(self):
+            if mutation == 'replace_before_fstat' and not self.changed:
+                self.changed = True
+                mutate('replace')
+            return self.stream.fileno()
+        def read(self, size):
+            if mutation == 'read_error':
+                raise OSError('secret read failure')
+            result = self.stream.read(size)
+            if not self.changed:
+                self.changed = True
+                mutate('replace' if mutation == 'replace_during_read' else 'different_size')
+            return result
+
+    def fdopen(*args, **kwargs):
+        stream = original_fdopen(*args, **kwargs)
+        streams.append(stream)
+        return Reader(stream)
+
+    monkeypatch.setattr(adapter.os, 'fdopen', fdopen)
+    with pytest.raises(adapters.VerificationAdapterError) as caught:
+        adapter._file_state(root, ('pubspec.lock',))
+    assert 'secret' not in str(caught.value)
+    assert mutations == ([] if mutation == 'read_error' else [mutation])
+    assert streams and all(stream.closed for stream in streams)
+
+
+def component_package():
+    pkg = package(ids=('OSV-A', 'OSV-B', 'OSV-C', 'OSV-D'))
+    pkg['vulnerabilities'] = [
+        {'id': 'OSV-A', 'aliases': ['CVE-AB']},
+        {'id': 'OSV-B', 'aliases': ['CVE-AB', 'CVE-BC']},
+        {'id': 'OSV-C', 'aliases': ['CVE-BC']},
+        {'id': 'OSV-D'},
+    ]
+    pkg['groups'] = [
+        {'ids': ['OSV-A', 'OSV-B', 'OSV-C'],
+         'aliases': ['OSV-A', 'OSV-B', 'OSV-C', 'CVE-AB', 'CVE-BC']},
+        {'ids': ['OSV-D'], 'aliases': ['OSV-D']},
+    ]
+    return pkg
+
+
+@pytest.mark.parametrize('contradiction', ['merged_disconnected', 'split_connected'])
+def test_9c2_grouping_requires_exact_connected_components(root, monkeypatch, contradiction):
+    write(root)
+    pkg = component_package()
+    if contradiction == 'merged_disconnected':
+        pkg['groups'] = [{'ids': ['OSV-A', 'OSV-B', 'OSV-C', 'OSV-D'],
+                          'aliases': ['OSV-A', 'OSV-B', 'OSV-C', 'OSV-D', 'CVE-AB', 'CVE-BC']}]
+    else:
+        pkg['groups'] = [
+            {'ids': ['OSV-A'], 'aliases': ['OSV-A', 'CVE-AB']},
+            {'ids': ['OSV-B', 'OSV-C'], 'aliases': ['OSV-B', 'OSV-C', 'CVE-AB', 'CVE-BC']},
+            {'ids': ['OSV-D'], 'aliases': ['OSV-D']},
+        ]
+    fake_process(monkeypatch, root, output(packages=[pkg]), exit_code=1)
+    with pytest.raises(adapters.VerificationAdapterError):
+        evaluate(root)
+    assert outcome(root).raw_status == 'ERROR'  # Not an exception-eligible FAIL.
+
+
+def test_9c2_transitive_components_duplicates_and_permutations_preserve_hash(root, monkeypatch):
+    write(root)
+    pkg = component_package()
+    fake_process(monkeypatch, root, output(packages=[pkg]), exit_code=1)
+    first = evaluate(root)
+    first_outcome = outcome(root)
+    reordered = copy.deepcopy(pkg)
+    reordered['vulnerabilities'].reverse()
+    for advisory in reordered['vulnerabilities']:
+        advisory.setdefault('aliases', []).reverse()
+        advisory.update(summary='changed prose', modified='changed timestamp')
+    reordered['vulnerabilities'].append(copy.deepcopy(reordered['vulnerabilities'][0]))
+    reordered['groups'].reverse()
+    for group in reordered['groups']:
+        group['ids'].reverse()
+        group['aliases'].reverse()
+    reordered['groups'].append(copy.deepcopy(reordered['groups'][0]))
+    fake_process(monkeypatch, root, json.dumps(output(packages=[reordered]), indent=2),
+                 exit_code=1, stderr='volatile raw stderr')
+    second = evaluate(root)
+    assert first.verification_status == second.verification_status == 'FAIL'
+    assert first.semantic_sha256 == second.semantic_sha256
+    assert first.result_sha256 == second.result_sha256
+    assert first_outcome == outcome(root)
+
+
+def test_9c2_runtime_integrity_state_is_not_semantic_evidence(root, monkeypatch):
+    lock = write(root)
+    _, tool = fake_process(monkeypatch, root, output())
+    first, first_outcome = evaluate(root), outcome(root)
+    lock.write_bytes(b'different dependency bytes between separate stable runs')
+    tool.write_bytes(b'different binary bytes between separate stable runs')
+    second = evaluate(root)
+    assert first.verification_status == second.verification_status == 'PASS'
+    assert first.semantic_sha256 == second.semantic_sha256
+    assert first.result_sha256 == second.result_sha256
+    assert first_outcome == outcome(root)
+    assert hashlib.sha256(tool.read_bytes()).hexdigest() not in json.dumps(first_outcome.details)
+
+
+def test_9c2_executable_e2_rechecks_after_input_hashing(root, monkeypatch):
+    write(root)
+    calls, tool = fake_process(monkeypatch, root, output())
+    adapter = module()
+    original = adapter._file_state
+    checkpoints = []
+
+    def file_state(*args):
+        state = original(*args)
+        checkpoints.append(state)
+        if len(checkpoints) == 2:  # T1: E1 has passed; E2 must reject the drift.
+            mutate_file(tool, 'restored_mtime')
+        return state
+
+    monkeypatch.setattr(adapter, '_file_state', file_state)
+    assert outcome(root).raw_status == 'ERROR'
+    assert len(calls) == 1 and len(checkpoints) == 2
+    assert not Path(calls[0][1]['cwd']).exists()
+
+
+def test_9c2_config_creation_is_exclusive_and_cleans_up(root, monkeypatch):
+    write(root)
+    calls, _ = fake_process(monkeypatch, root, output())
+    adapter = module()
+    original = adapter.tempfile.mkdtemp
+    directories = []
+
+    def directory(*args, **kwargs):
+        name = original(*args, **kwargs)
+        directories.append(Path(name))
+        (Path(name) / 'osv-scanner.toml').write_bytes(b'pre-existing data')
+        return name
+
+    monkeypatch.setattr(adapter.tempfile, 'mkdtemp', directory)
+    assert outcome(root).raw_status == 'ERROR'
+    assert not calls and directories and all(not path.exists() for path in directories)
+
+
+@pytest.mark.parametrize('failure', ['parser', 'version', 'timeout', 'process', 'integrity'])
+def test_9c2_temp_cleanup_on_every_failure_boundary(root, monkeypatch, failure):
+    lock = write(root)
+    calls, _ = fake_process(monkeypatch, root, output())
+    adapter = module()
+    original = adapter.run_process
+
+    def run(argv, **kwargs):
+        result = original(argv, **kwargs)
+        if argv[1:] == ['--version']:
+            if failure == 'version':
+                return subprocess.CompletedProcess(argv, 0, 'osv-scanner version: 2.3.2', '')
+            return result
+        if failure == 'parser':
+            return subprocess.CompletedProcess(argv, 0, 'secret malformed JSON', '')
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired(argv, 300)
+        if failure == 'process':
+            raise OSError('secret process failure')
+        mutate_file(lock, 'restored_mtime')
+        return result
+
+    monkeypatch.setattr(adapter, 'run_process', run)
+    actual = outcome(root)
+    assert actual.raw_status == 'ERROR' and 'secret' not in actual.failure_reason
+    assert calls and not Path(calls[0][1]['cwd']).exists()
+
+
+def test_9c2_hash_open_is_noninheritable_readonly_and_no_follow(root, monkeypatch):
+    lock = write(root)
+    adapter = module()
+    with adapter._open_binary(lock) as stream:
+        assert stream.read() == lock.read_bytes()
+        assert not os.get_inheritable(stream.fileno())
+        with pytest.raises(OSError):
+            os.write(stream.fileno(), b'forbidden')
+    if os.name == 'nt':
+        import ctypes
+        import msvcrt
+
+        calls = []
+        class Function:
+            def __call__(self, *args):
+                calls.append(args)
+                return 123
+        kernel = SimpleNamespace(CreateFileW=Function(), CloseHandle=Function())
+        monkeypatch.setattr(ctypes, 'WinDLL', lambda *a, **k: kernel)
+        monkeypatch.setattr(msvcrt, 'open_osfhandle', lambda handle, flags: (handle, flags))
+        handle, flags = adapter._windows_read_fd(lock)
+        assert handle == 123 and flags & os.O_NOINHERIT and flags & os.O_BINARY
+        assert calls[0][1:6] == (0x80000000, 7, None, 3, 0x00200000)
+    else:
+        original = adapter.os.open
+        flags = []
+        def open_file(path, selected):
+            flags.append(selected)
+            return original(path, selected)
+        monkeypatch.setattr(adapter.os, 'open', open_file)
+        with adapter._open_binary(lock):
+            pass
+        assert flags[0] & os.O_NOFOLLOW and flags[0] & os.O_NONBLOCK
+
+
+def test_9c2_no_unsafe_fallback_without_no_follow_primitive(root, monkeypatch):
+    lock = write(root)
+    monkeypatch.setattr(module(), 'os', SimpleNamespace(name='posix'))
+    with pytest.raises(adapters.VerificationAdapterError):
+        module()._open_binary(lock)
+
+
+def test_9c2_observable_path_identity_change_during_hashing_is_error(root, monkeypatch):
+    write(root)
+    adapter = module()
+    original = adapter._safe_file
+    checks = []
+
+    def safe_file(*args):
+        path, info = original(*args)
+        checks.append(path)
+        if len(checks) == 2:
+            info = stat_with(info, st_ino=info.st_ino + 1)
+        return path, info
+
+    monkeypatch.setattr(adapter, '_safe_file', safe_file)
+    with pytest.raises(adapters.VerificationAdapterError):
+        adapter._file_state(root, ('pubspec.lock',))
+    assert len(checks) == 2
+
+
+def test_9c2_directory_state_rechecked_after_config_hashing(root, monkeypatch):
+    write(root)
+    calls, _ = fake_process(monkeypatch, root, output())
+    adapter = module()
+    original = adapter._directory_state
+    checks = []
+
+    def directory_state(path):
+        state = original(path)
+        checks.append(state)
+        return (*state[:2], state[2] + 1) if len(checks) == 3 else state
+
+    monkeypatch.setattr(adapter, '_directory_state', directory_state)
+    assert outcome(root).raw_status == 'ERROR'
+    assert not calls and len(checks) == 4  # Creation, C0 before/after, safe cleanup.
+
+
+@pytest.mark.parametrize('vulnerable', [False, True])
+def test_9c2_preserves_exact_semantic_schema_v1(root, monkeypatch, vulnerable):
+    write(root)
+    pkg = component_package() if vulnerable else package()
+    fake_process(monkeypatch, root, output(packages=[pkg]), exit_code=int(vulnerable))
+    identity = {'source': 'pubspec.lock', **pkg['package']}
+    expected = {
+        'schema_version': 1,
+        'lockfiles': ['pubspec.lock'],
+        'packages': [identity],
+        'vulnerabilities': [{
+            **identity,
+            'ids': sorted(advisory['id'] for advisory in pkg.get('vulnerabilities', [])),
+            'groups': sorted([{'ids': sorted(group['ids']), 'aliases': sorted(group['aliases'])}
+                              for group in pkg.get('groups', [])], key=lambda group: group['ids']),
+        }],
+    }
+    digest = hashlib.sha256(json.dumps(expected, sort_keys=True, separators=(',', ':'),
+                                      ensure_ascii=False, allow_nan=False).encode('utf-8')).hexdigest()
+    result = evaluate(root)
+    assert result.semantic_sha256 == digest
+    assert result.verification_status == ('FAIL' if vulnerable else 'PASS')
+
+
+def test_9c2_cleanup_does_not_delete_replaced_temp_directory(root, monkeypatch):
+    write(root)
+    calls, _ = fake_process(monkeypatch, root, output())
+    adapter = module()
+    # All directories in this scenario remain in the test-owned fixture tree.
+    monkeypatch.setattr(adapter.tempfile, 'gettempdir', lambda: str(root.parent))
+    original = adapter.run_process
+    displaced, replacement = [], []
+
+    def run(argv, **kwargs):
+        result = original(argv, **kwargs)
+        if argv[1:] == ['--version']:
+            directory = Path(kwargs['cwd'])
+            moved = directory.with_name(directory.name + '.displaced')
+            directory.rename(moved)
+            displaced.append(moved)
+            directory.mkdir()
+            sentinel = directory / 'not-owned-by-adapter.txt'
+            sentinel.write_bytes(b'protected unrelated contents')
+            replacement.append(sentinel)
+        return result
+
+    monkeypatch.setattr(adapter, 'run_process', run)
+    assert outcome(root).raw_status == 'ERROR'
+    assert len(calls) == 1 and displaced and replacement
+    assert replacement[0].read_bytes() == b'protected unrelated contents'
+    assert (displaced[0] / 'osv-scanner.toml').read_bytes() == b''

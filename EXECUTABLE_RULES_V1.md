@@ -1139,9 +1139,100 @@ cost one formatter process each plus two streaming hash passes. Trusted SDK
 behavior is assumed: read-only flags are not an OS sandbox. Human review and
 the existing governance remain authoritative for meaning-changing edits.
 
-Stage 10 is **not closed**: 10B/10C remain. Stage 10A is accepted as the
+Stage 10 is **not closed**: 10C remains. Stage 10A is accepted as the
 deterministic Dart formatting quality gate; it does not add strict analyzer policy,
 coverage, complexity/duplication metrics, SAST, secrets or later stages.
+
+### Stage 10B: strict Dart static-quality gate
+
+`dart.analyze.strict@1` reuses `Project Rule -> code.verification -> Verification
+Adapter -> Rule Evidence v1 -> SYNC binding/finalization`. It is a separate
+packaged capability implemented inside the existing Dart analysis module, not
+a new checker, Rule schema, Evidence version, quality-severity field or command
+runner. Its fixed metadata is `executes_project_code=False`,
+`uses_semantic_hash=True`, `uses_network=False`, `global_input_patterns=("**",)`.
+Activation belongs to the Dart project's canonical Rule registry; the adapter
+does not invent a second project-detection protocol.
+
+**Legacy separation.** `dart.analyze@1` retains its raw-output hashing and fixed
+`dart analyze --format=machine --no-plugins .` invocation. INFO diagnostics with
+exit 0 remain accepted legacy PASS. Strict analysis does not change legacy
+analysis, formatting, tests or OSV contracts.
+
+**Applicability and execution.** Empty bounded evaluation paths `()` return
+`NOT_APPLICABLE` without version probing or analyzer execution. Any non-empty
+bounded change, including documentation, produces `project_wide_invalidation`;
+`None` produces `project_wide`. Both analyze the complete project using only:
+
+```text
+dart analyze --format=machine --no-plugins --fatal-infos .
+```
+
+Execution uses `shell=False`, project-root cwd, the existing bounded process
+runner, a 120-second analysis timeout and 16 MiB per captured stream. The existing
+Dart version probe keeps its 10-second/64 KiB bounds. Plugins are disabled. There
+is no project-supplied argv, configurable threshold, `minimum_severity` or
+`fatal_infos` parameter, SDK installation, `pub get`, `flutter pub get`, `dart fix`
+or automatic canonical mutation.
+
+**Strict outcomes.** Exit codes must agree with the normalized diagnostics:
+
+| Normalized diagnostics | Expected exit | Status |
+| --- | --- | --- |
+| None | 0 | PASS |
+| Highest severity INFO | 1 | FAIL |
+| Highest severity WARNING | 2 | FAIL |
+| Highest severity ERROR | 3 | FAIL |
+
+Every contradiction is infrastructure/integrity `ERROR`, including INFO with
+exit 0 and empty findings with nonzero exit. Analyzer-server crash exit 4,
+other unsupported/negative/bool exits, malformed output, non-text output, unsafe
+or out-of-root diagnostic paths, missing Dart, version failure, timeout, capture
+overflow and execution exceptions are controlled `VerificationAdapterError` /
+Rule `ERROR`, never diagnostic `FAIL`. Runtime failure detail is sanitized by
+the existing consumer boundary.
+
+**Findings and semantics.** The existing machine parser produces sorted,
+deduplicated findings with exactly `path`, `line`, `column`, `severity`, `code`,
+`message`. Paths are canonical repository-relative paths. Severity remains the
+analyzer's INFO/WARNING/ERROR; Rule enforcement severity is independent policy.
+`semantic_sha256` hashes canonical UTF-8 JSON (sorted keys, compact separators,
+unescaped Unicode) with exactly this semantic schema v1:
+
+```json
+{"schema_version":1,"diagnostics":[{"path":"lib/main.dart","line":1,"column":2,"severity":"INFO","code":"LINT","message":"Use a better name."}]}
+```
+
+The diagnostics array is the normalized sorted/deduplicated inventory; no
+hidden diagnostic type or source-length fields are added. Raw stdout/stderr,
+machine-line representation/order, absolute root, timing and PID are excluded.
+Raw stdout/stderr SHA-256 remain validated execution provenance at the adapter
+result boundary, but do not enter stable result hashing or Rule Evidence.
+Common result hashing still binds adapter/tool identity and version, evaluation
+mode, status, exit code and normalized findings. Equivalent findings with
+different raw ordering or stderr therefore retain identical semantic/result
+hashes and Evidence. A change to any finding field changes those hashes.
+
+**Governance and fresh SYNC checks.** Existing Rule severity, exception policy
+and governed waiver semantics apply unchanged. Infrastructure ERROR remains
+blocking and cannot be waived. For a new finalization, the existing fresh
+`sync_verify` recheck executes strict analysis again before staging/commit.
+Semantic-equivalent PASS with transcript volatility can reach dry-run `prepared`;
+a fresh valid INFO/exit-1 FAIL changes Evidence and blocks stale finalization
+even with nonblocking WARNING Rule enforcement and unchanged Git/files/fingerprint.
+Previously proven committed retries retain the existing finalization protocol.
+
+**Limits.** Installed Dart, analyzer configuration, language/package resolution
+and prepared `.dart_tool` environment remain external prerequisites. There is
+no dependency selection map, TTL/cache, configuration/binary attestation or OS
+sandbox. Fixed flags and capability metadata are not an enforced network or
+filesystem sandbox; trusted SDK behavior is assumed. No live Dart/network is
+required by the regression tests. Human governance remains authoritative for
+meaning-changing edits.
+
+Stage 10 is **NOT closed**: **10C remains**. Stage 10B adds no coverage, mutation
+testing, complexity/duplication metrics, method-length limit, SAST, secrets,
+SBOM/licenses, plugins, autofix, arbitrary commands, Stage 11 or Stage 12.
 
 ## Normative v1 field contract
 

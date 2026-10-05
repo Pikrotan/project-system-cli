@@ -89,6 +89,15 @@ VERIFICATION_ADAPTER_REGISTRY = MappingProxyType(
             ),
             executes_project_code=False,
         ),
+        "dart.analyze.strict": VerificationAdapterSpec(
+            adapter_id="dart.analyze.strict",
+            version="1",
+            implementation=dart_analyze_adapter.run_dart_analyze_strict,
+            global_input_patterns=("**",),
+            executes_project_code=False,
+            uses_semantic_hash=True,
+            uses_network=False,
+        ),
         "dart.test": VerificationAdapterSpec(
             adapter_id="dart.test",
             version="1",

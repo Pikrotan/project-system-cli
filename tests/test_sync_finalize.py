@@ -1158,3 +1158,94 @@ def test_dart_format_fresh_sync_recheck_binds_semantics_not_transcript(
         assert report['commit_result'] == report['push_result'] == 'not_requested'
     assert len(format_calls) > scans_before
     assert _osv_repository_identity(root, pack_path) == before
+
+
+@pytest.mark.parametrize('info_drift', [False, True])
+def test_dart_analyze_strict_fresh_sync_recheck_binds_semantics_not_transcript(
+    tmp_path, monkeypatch, info_drift,
+):
+    from project_system import dart_analyze_adapter, sync_finalization
+    from project_system.verification_adapters import VERIFICATION_ADAPTER_REGISTRY
+
+    assert 'dart.analyze.strict' in VERIFICATION_ADAPTER_REGISTRY
+
+    def configure(root, path, object_id):
+        source = root / 'lib' / 'main.dart'
+        source.parent.mkdir()
+        source.write_text('void main() {}\n', encoding='utf-8')
+        _write_rule_layer(root, {'QUALITY-001': {
+            'title': 'Strict analysis', 'status': 'active', 'category': 'testing',
+            'description': 'Verify all Dart analyzer diagnostics.',
+            'verification': {'method': 'deterministic', 'checker': 'code.verification',
+                             'parameters': {'adapter': 'dart.analyze.strict'}},
+            'enforcement': {'severity': 'WARNING',
+                            'checkpoints': ['project_validate', 'sync_verify']},
+            'exception_policy': 'forbidden',
+        }})
+
+    state = {'info': False, 'volatile': False, 'scans': [], 'rechecks': []}
+
+    def run(argv, **kwargs):
+        if argv == ['dart', '--version']:
+            return subprocess.CompletedProcess(argv, 0, 'Dart SDK version: 3.13.1', '')
+        assert argv == ['dart', 'analyze', '--format=machine', '--no-plugins', '--fatal-infos', '.']
+        assert kwargs['shell'] is False
+        stdout = '\n\n' if state['volatile'] else ''
+        if state['info']:
+            machine_path = (kwargs['cwd'] / 'lib' / 'main.dart').as_posix()
+            stdout += f'INFO|HINT|LINT|{machine_path}|1|1|1|Consider a better name.\n'
+        stderr = 'volatile analyzer stderr' if state['volatile'] else ''
+        state['scans'].append((tuple(argv), kwargs['cwd'], stdout, stderr))
+        return subprocess.CompletedProcess(argv, int(state['info']), stdout, stderr)
+
+    monkeypatch.setattr(dart_analyze_adapter, 'run_process', run)
+    root, _, _, head, _, pack_path, output, _ = _setup_verified(tmp_path, configure=configure)
+    verified = json.loads((output / 'verification.json').read_text(encoding='utf-8'))
+    before = _osv_repository_identity(root, pack_path)
+    assert before[2] == (verified['verified_working_tree_state'], verified['verification_fingerprint'])
+    scans_before = len(state['scans'])
+    assert scans_before > 0
+    assert all(not stdout and not stderr for _, _, stdout, stderr in state['scans'])
+
+    real_validate = sync_finalization.validate_report
+
+    def observe(root, **options):
+        report = real_validate(root, **options)
+        state['rechecks'].append((options, report))
+        return report
+
+    monkeypatch.setattr(sync_finalization, 'validate_report', observe)
+    state.update(info=info_drift, volatile=True)
+    if info_drift:
+        with pytest.raises(SyncFinalizeIntegrityError, match='Rule Evidence changed.*sync verify again'):
+            finalize_sync(root, pack_path)
+        _assert_osv_blocked(output, head, root)
+    else:
+        _, report = finalize_sync(root, pack_path)
+        assert report['state'] == _load_finalization(output)['state'] == 'prepared'
+        assert report['commit_result'] == report['push_result'] == 'not_requested'
+
+    assert len(state['scans']) > scans_before  # Real fresh analyzer execution, not cached evidence.
+    assert all(cwd == root.resolve() and stdout and stderr
+               for _, cwd, stdout, stderr in state['scans'][scans_before:])
+    current, rebuilt = _osv_fresh_binding(verified, state)
+    old_item, = verified['rule_evidence_binding']['evidence']['results']
+    new_item, = rebuilt['evidence']['results']
+    assert old_item['raw_status'] == 'PASS'
+    assert old_item['details']['adapter_id'] == 'dart.analyze.strict'
+    assert new_item['details']['exit_code'] == int(info_drift)
+    assert not any(level in {'BLOCKING', 'ERROR'} for level, _, _ in current.issues)
+    if info_drift:
+        assert new_item['raw_status'] == new_item['effective_status'] == 'FAIL'
+        assert new_item['details']['findings'][0]['severity'] == 'INFO'
+        assert new_item['details']['findings'][0]['path'] == 'lib/main.dart'
+        assert new_item['details']['semantic_sha256'] != old_item['details']['semantic_sha256']
+        assert new_item['details']['result_sha256'] != old_item['details']['result_sha256']
+        assert rebuilt != verified['rule_evidence_binding']
+    else:
+        assert new_item['details']['semantic_sha256'] == old_item['details']['semantic_sha256']
+        assert new_item['details']['result_sha256'] == old_item['details']['result_sha256']
+        assert rebuilt == verified['rule_evidence_binding']
+        assert report['rule_evidence_fingerprint'] == rebuilt['evidence']['evidence_fingerprint']
+    # File bytes, source, HEAD, index, diffs and actual verified fingerprint are unchanged.
+    assert _osv_repository_identity(root, pack_path) == before

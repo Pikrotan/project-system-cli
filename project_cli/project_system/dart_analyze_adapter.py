@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import hashlib
+import json
 from pathlib import Path
 import re
 
@@ -313,3 +314,96 @@ def run_dart_analyze(project_root, evaluation_paths, evaluation_mode):
         base,
         result_sha256=verification_result_sha256(base),
     )
+
+
+def _strict_analyze_semantic_sha256(findings):
+    """Schema v1 binds only the normalized six-field diagnostic inventory."""
+    payload = {
+        "schema_version": 1,
+        "diagnostics": [
+            {
+                "path": finding.path,
+                "line": finding.line,
+                "column": finding.column,
+                "severity": finding.severity,
+                "code": finding.code,
+                "message": finding.message,
+            }
+            for finding in findings
+        ],
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def run_dart_analyze_strict(project_root, evaluation_paths, evaluation_mode):
+    """Run the opt-in strict gate without changing legacy dart.analyze@1."""
+    from .verification_adapters import (
+        VerificationAdapterResult,
+        verification_result_sha256,
+    )
+
+    if evaluation_mode == "bounded":
+        if evaluation_paths != ():
+            raise RuntimeError("bounded dart.analyze.strict requires empty paths")
+        tool_version = "not_executed"
+        verification_status = "NOT_APPLICABLE"
+        findings = ()
+        exit_code = 0
+        stdout = stderr = ""
+    else:
+        if evaluation_mode not in {"project_wide", "project_wide_invalidation"}:
+            raise RuntimeError("unsupported dart.analyze.strict evaluation mode")
+        if evaluation_paths is not None:
+            raise RuntimeError("complete dart.analyze.strict must not receive bounded paths")
+
+        tool_version = _dart_version(project_root)
+        completed = run_process(
+            ["dart", "analyze", "--format=machine", "--no-plugins", "--fatal-infos", "."],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            shell=False,
+            timeout=120,
+            max_capture_bytes=_DART_ANALYZE_MAX_CAPTURE_BYTES,
+        )
+        stdout = completed.stdout
+        stderr = completed.stderr
+        if not isinstance(stdout, str) or not isinstance(stderr, str):
+            raise RuntimeError("dart analyze strict returned non-text output")
+        exit_code = completed.returncode
+        if type(exit_code) is not int or exit_code not in {0, 1, 2, 3}:
+            raise RuntimeError("dart analyze strict infrastructure failure")
+
+        findings = _parse_machine_output(project_root, stdout)
+        # --fatal-infos is deliberately not part of the legacy exit contract.
+        severity_exits = {"INFO": 1, "WARNING": 2, "ERROR": 3}
+        expected_exit = max((severity_exits[item.severity] for item in findings), default=0)
+        if exit_code != expected_exit:
+            raise RuntimeError("dart analyze strict exit disagrees with diagnostic severities")
+        verification_status = "PASS" if exit_code == 0 else "FAIL"
+
+    base = VerificationAdapterResult(
+        adapter_id="dart.analyze.strict",
+        adapter_version="1",
+        tool_name="dart",
+        tool_version=tool_version,
+        evaluation_mode=evaluation_mode,
+        verification_status=verification_status,
+        inspected_paths=(),
+        findings=findings,
+        exit_code=exit_code,
+        stdout_sha256=_sha256_text(stdout),
+        stderr_sha256=_sha256_text(stderr),
+        result_sha256="0" * 64,
+        semantic_sha256=_strict_analyze_semantic_sha256(findings),
+    )
+    return replace(base, result_sha256=verification_result_sha256(base))

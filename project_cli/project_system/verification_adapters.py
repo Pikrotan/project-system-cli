@@ -80,7 +80,7 @@ VERIFICATION_ADAPTER_REGISTRY = MappingProxyType(
     {
         "dart.mutation.strict": VerificationAdapterSpec(
             adapter_id="dart.mutation.strict",
-            version="1",
+            version="2",
             implementation=dart_mutation_adapter.run_dart_mutation,
             global_input_patterns=("**",),
             executes_project_code=True,

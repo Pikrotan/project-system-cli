@@ -4,7 +4,7 @@ Only disposable shadow files are intentionally mutated. This is observable
 copy consistency, not a filesystem snapshot or a security sandbox for tests.
 """
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from fnmatch import fnmatchcase
 import hashlib
 import json
@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import tempfile
 
 from .process_runner import run_process
@@ -32,6 +33,7 @@ SHADOW_EXCLUSIONS = frozenset({
 })
 VERSION_TIMEOUT_SECONDS = 30
 BASELINE_TIMEOUT_SECONDS = 300
+ANALYZE_TIMEOUT_SECONDS = 120
 MUTATION_TIMEOUT_SECONDS = 7200
 MAX_CAPTURE_BYTES = 16 * 1024 * 1024
 MAX_REPORT_BYTES = 64 * 1024 * 1024
@@ -44,7 +46,7 @@ SUPPORTED_STATUSES = frozenset({'Killed', 'Timeout', 'Survived', 'NoCoverage', '
 def _error(message):
     from .verification_adapters import VerificationAdapterError
 
-    raise VerificationAdapterError(message)
+    raise VerificationAdapterError(message) from None
 
 
 def _lstat(path):
@@ -115,7 +117,7 @@ def _file_state(info):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, stat.S_IMODE(info.st_mode)
 
 
-def _read_file(root, relative, destination=None, *, report=False):
+def _read_file(root, relative, destination=None, *, report=False, content=False):
     # Reuse only the existing platform-specific no-follow read primitive.
     from .osv_scan_adapter import _open_binary
 
@@ -137,7 +139,7 @@ def _read_file(root, relative, destination=None, *, report=False):
                     digest.update(chunk)
                     if with_destination is not None:
                         with_destination.write(chunk)
-                    if report:
+                    if report or content:
                         chunks.append(chunk)
                 if (_file_state(os.fstat(source.fileno())) != before
                         or _file_state(_safe_file(root, relative)[1]) != before or size != before[2]):
@@ -149,7 +151,7 @@ def _read_file(root, relative, destination=None, *, report=False):
             os.chmod(destination, before[4])
     except OSError:
         _error('Mutation workspace file cannot be read or copied reliably')
-    return b''.join(chunks) if report else (before[4], digest.hexdigest())
+    return b''.join(chunks) if report or content else (before[4], digest.hexdigest())
 
 
 def _inventory(root, destination=None):
@@ -199,20 +201,43 @@ def discover_mutation_sources(project_root):
     return _targets(_inventory(project_root))
 
 
-def _execute(argv, root, timeout, stdout_hash, stderr_hash, label):
+def _hash_transport(stdout_hash, stderr_hash, label, stdout, stderr):
+    for digest, text in ((stdout_hash, stdout), (stderr_hash, stderr)):
+        for value in (label, text):
+            data = value.encode('utf-8')
+            if len(data) > MAX_CAPTURE_BYTES:
+                _error('Mutation process transport exceeds its byte budget')
+            digest.update(len(data).to_bytes(8, 'big'))
+            digest.update(data)
+
+
+def _execute(argv, root, timeout, stdout_hash, stderr_hash, label, *, allowed_exits=(0,), repeated_timeout=False):
     try:
         completed = run_process(argv, cwd=root, capture_output=True, text=True,
                                 encoding='utf-8', check=False, shell=False,
                                 timeout=timeout, max_capture_bytes=MAX_CAPTURE_BYTES)
-        if (type(completed.returncode) is not int or completed.returncode != 0
+        if (type(completed.returncode) is not int or completed.returncode not in allowed_exits
                 or not isinstance(completed.stdout, str) or not isinstance(completed.stderr, str)):
             _error(label + ' did not establish a trustworthy successful process result')
-        for digest, text in ((stdout_hash, completed.stdout), (stderr_hash, completed.stderr)):
-            for value in (label, text):
-                data = value.encode('utf-8')
-                digest.update(len(data).to_bytes(8, 'big'))
-                digest.update(data)
+        _hash_transport(stdout_hash, stderr_hash, label, completed.stdout, completed.stderr)
         return completed
+    except subprocess.TimeoutExpired as exc:
+        if not repeated_timeout or exc.timeout != BASELINE_TIMEOUT_SECONDS or exc.cmd != argv:
+            _error(label + ' did not establish the required independent outcome')
+        # A bounded runner timeout is authority only for an engine Timeout.
+        # Python may provide bytes even with text=True; never decode or expose
+        # potentially truncated transcripts as protocol or semantic evidence.
+        for digest, value in ((stdout_hash, exc.stdout), (stderr_hash, exc.stderr)):
+            if value is None:
+                value = b''
+            if isinstance(value, str):
+                value = value.encode('utf-8')
+            if not isinstance(value, bytes) or len(value) > MAX_CAPTURE_BYTES:
+                _error('Mutation timeout transport exceeds its byte budget')
+            digest.update(b'independent-timeout\0')
+            digest.update(len(value).to_bytes(8, 'big'))
+            digest.update(value)
+        return None
     except Exception:
         # No raw transcripts, exception text, source or temporary paths escape.
         _error(label + ' execution failed or returned an invalid process result')
@@ -256,7 +281,47 @@ def _report_path(value):
     return _canonical(value)
 
 
-def _parse_report(report_root, targets):
+@dataclass(frozen=True)
+class _ReplayMutation:
+    # Execution-only data: none of these bytes/offsets/IDs enter Evidence.
+    record: dict
+    original_bytes: bytes
+    mutated_bytes: bytes
+    mode: int
+
+
+def _reconstruct(source_root, raw_path, mutant, record, trusted_sources):
+    path = record['path']
+    source = _read_file(source_root, path, content=True)
+    mode = stat.S_IMODE(_safe_file(source_root, path)[1].st_mode)
+    if (mode, hashlib.sha256(source).hexdigest()) != trusted_sources[path]:
+        _error('Mutation reconstruction source does not match the trusted snapshot')
+    try:
+        source.decode('utf-8')
+        replacement = record['replacement'].encode('utf-8')
+        starts = [0] + [index + 1 for index, byte in enumerate(source) if byte == 10]
+        line, column = record['start_line'], record['start_column']
+        length = record['end_column'] - column
+        if record['end_line'] != line or length <= 0 or line > len(starts):
+            _error('Mutation source location violates the pinned byte-span contract')
+        start = starts[line - 1] + column - 1
+        # The start must belong to its encoded row, never spill into the next.
+        line_end = starts[line] if line < len(starts) else len(source)
+        if start >= line_end or start + length > len(source):
+            _error('Mutation source byte span is outside the trusted baseline')
+        source[:start].decode('utf-8')
+        original = source[start:start + length].decode('utf-8')
+        source[start + length:].decode('utf-8')
+        identifier = mutant.get('id')
+        expected = hashlib.md5(f'{raw_path}:{line}:{original}:{record["replacement"]}'.encode('utf-8')).hexdigest()
+        if not isinstance(identifier, str) or not re.fullmatch('[0-9a-f]{32}', identifier) or identifier != expected:
+            _error('Mutation engine ID does not match the reconstructed pinned identity')
+        return _ReplayMutation(record, source, source[:start] + replacement + source[start + length:], mode)
+    except UnicodeError:
+        _error('Mutation source byte span or replacement is not valid UTF-8')
+
+
+def _parse_report(report_root, targets, source_root, trusted_sources):
     try:
         raw = _read_file(report_root, 'mutation-report.json', report=True)
         payload = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs,
@@ -297,10 +362,161 @@ def _parse_report(report_root, targets):
             seen.add(identity)
             if status_value == 'CompileError':
                 _error('Mutation JSON report contains an infrastructure-status mutant')
-            records.append(dict(zip(MUTANT_FIELDS, (*identity, status_value))))
+            record = dict(zip(MUTANT_FIELDS, (*identity, status_value)))
+            records.append(_reconstruct(source_root, raw_path, mutant, record, trusted_sources))
     if not records:
         _error('Mutation targets exist but no trustworthy mutant inventory was established')
-    return tuple(sorted(records, key=lambda record: tuple(record[key] for key in MUTANT_FIELDS)))
+    return tuple(sorted(records, key=lambda item: tuple(item.record[key] for key in MUTANT_FIELDS)))
+
+
+def _assert_targets(root, baseline, *, changed=None):
+    current = _inventory(root)
+    targets = _targets(baseline)
+    if _targets(current) != targets:
+        _error('Mutation process changed the applicable source inventory')
+    expected = {relative: (mode, digest) for relative, mode, digest in baseline[1] if relative in targets}
+    if changed is not None:
+        expected[changed.record['path']] = (changed.mode, hashlib.sha256(changed.mutated_bytes).hexdigest())
+    actual = {relative: (mode, digest) for relative, mode, digest in current[1] if relative in targets}
+    if actual != expected:
+        _error('Mutation process did not preserve the required source bytes and modes')
+
+
+def _protocol_file(root, raw_path, *, absolute=False):
+    if not isinstance(raw_path, str) or not raw_path:
+        _error('Mutation attestation protocol path is malformed')
+    path = Path(raw_path)
+    if absolute and not path.is_absolute():
+        _error('Mutation analyzer protocol requires an absolute diagnostic path')
+    if path.is_absolute():
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError:
+            _error('Mutation attestation protocol path escapes its shadow')
+    else:
+        relative = _report_path(raw_path)
+    # Inspect ancestry without following links before qualified parsers resolve.
+    _safe_file(root, relative)
+
+
+def _analyze(root, stdout_hash, stderr_hash):
+    from .dart_analyze_adapter import (
+        _decode_machine_fields, _expected_analyze_exit_code, _parse_machine_output,
+    )
+
+    completed = _execute(['dart', 'analyze', '--format=machine', '--no-plugins', '.'], root,
+                         ANALYZE_TIMEOUT_SECONDS, stdout_hash, stderr_hash,
+                         'Dart mutation static validity', allowed_exits=(0, 1, 2, 3))
+    _inventory(root)  # Detect command-created unsafe ancestry before resolution.
+    try:
+        for index, line in enumerate(completed.stdout.splitlines(), 1):
+            if line:
+                fields = _decode_machine_fields(line, output_line=index)
+                _protocol_file(root, fields[3], absolute=True)
+        findings = _parse_machine_output(root, completed.stdout)
+        if completed.returncode != _expected_analyze_exit_code(findings):
+            _error('Mutation analyzer exit disagrees with its machine diagnostics')
+        if any(finding.severity == 'ERROR' for finding in findings):
+            _error('Mutation attestation requires an analyzer ERROR-free project')
+    except Exception:
+        _error('Mutation analyzer did not establish trustworthy static validity')
+
+
+def _write_reconstructed(root, item):
+    """Owned shadow write with no-follow handle, checked before truncation."""
+    path, info = _safe_file(root, item.record['path'])
+    before = _file_state(info)
+    if before[4] != item.mode or _read_file(root, item.record['path'], content=True) != item.original_bytes:
+        _error('Mutation replay target does not match the trusted baseline')
+    fd = None
+    try:
+        if os.name == 'nt':
+            import ctypes
+            from ctypes import wintypes
+            import msvcrt
+
+            kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+            create = kernel.CreateFileW
+            create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                               wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            create.restype = wintypes.HANDLE
+            close = kernel.CloseHandle
+            close.argtypes = [wintypes.HANDLE]
+            close.restype = wintypes.BOOL
+            # GENERIC_WRITE, share read/write/delete, OPEN_EXISTING,
+            # OPEN_REPARSE_POINT: open the object, never a final link target.
+            handle = create(str(path), 0x40000000, 7, None, 3, 0x00200000, None)
+            if handle == wintypes.HANDLE(-1).value:
+                raise OSError('Cannot open mutation shadow for writing')
+            try:
+                fd = msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY | os.O_NOINHERIT)
+            except BaseException:
+                close(handle)
+                raise
+        else:
+            if not hasattr(os, 'O_NOFOLLOW'):
+                _error('Mutation replay requires a no-follow write primitive')
+            fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        if (_file_state(os.fstat(fd)) != before
+                or _file_state(_safe_file(root, item.record['path'])[1]) != before):
+            _error('Mutation replay target changed while being opened')
+        os.ftruncate(fd, 0)
+        view = memoryview(item.mutated_bytes)
+        while view:
+            written = os.write(fd, view[:CHUNK_BYTES])
+            if written <= 0:
+                _error('Mutation replay write did not complete')
+            view = view[written:]
+        os.fsync(fd)
+    except OSError:
+        _error('Mutation replay cannot write its shadow reliably')
+    finally:
+        if fd is not None:
+            os.close(fd)
+    if (_read_file(root, item.record['path'], content=True) != item.mutated_bytes
+            or stat.S_IMODE(_safe_file(root, item.record['path'])[1].st_mode) != item.mode):
+        _error('Mutation replay write did not establish the exact mutation')
+
+
+def _attest(root, before, temporary_root, index, item, stdout_hash, stderr_hash):
+    from .dart_test_adapter import _parse_json_reporter_output
+
+    if _inventory(root) != before:
+        _error('Canonical project changed before independent replay copying')
+    replay = temporary_root / f'replay-{index}'
+    replay.mkdir()
+    if _inventory(root, replay) != before or _inventory(root) != before:
+        _error('Canonical project changed during independent replay copying')
+    _write_reconstructed(replay, item)
+    _assert_targets(replay, before, changed=item)
+    _analyze(replay, stdout_hash, stderr_hash)
+    _assert_targets(replay, before, changed=item)
+    timeout_status = item.record['status'] == 'Timeout'
+    completed = _execute(['dart', 'test', '--reporter=json'], replay, BASELINE_TIMEOUT_SECONDS,
+                         stdout_hash, stderr_hash, 'Dart mutation independent replay',
+                         allowed_exits=(0, 1), repeated_timeout=timeout_status)
+    _assert_targets(replay, before, changed=item)
+    if _inventory(root) != before:
+        _error('Canonical project changed during independent replay')
+    if completed is None:
+        return  # Only the explicit repeated Timeout contract reaches here.
+    try:
+        for line in completed.stdout.splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line, object_pairs_hook=_pairs, parse_float=_float, parse_constant=_constant)
+            if isinstance(event, dict) and event.get('type') == 'suite':
+                suite = event.get('suite')
+                if not isinstance(suite, dict):
+                    _error('Mutation replay suite is malformed')
+                _protocol_file(replay, suite.get('path'))
+        parsed = _parse_json_reporter_output(replay, completed.stdout)
+        if completed.returncode != (1 if parsed.verification_status == 'FAIL' else 0):
+            _error('Mutation replay exit disagrees with its structured protocol')
+        if timeout_status or parsed.verification_status != 'FAIL':
+            _error('Mutation engine status contradicts independent behavioral replay')
+    except Exception:
+        _error('Mutation behavioral replay did not establish the required structured outcome')
 
 
 def _result(mode, mutants=(), *, tool_version='not_executed', stdout_hash=None, stderr_hash=None):
@@ -318,10 +534,11 @@ def _result(mode, mutants=(), *, tool_version='not_executed', stdout_hash=None, 
                 ('Mutation survived the Dart test suite' if survived else 'Mutation has no test coverage')
                 + f" ({mutant['mutator_name']})",
             ))
-    semantic = json.dumps({'schema_version': 1, 'mutants': list(mutants)}, sort_keys=True,
+    semantic = json.dumps({'schema_version': 2, 'attestation': 'independent_replay_v1',
+                           'mutants': list(mutants)}, sort_keys=True,
                           separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf-8')
     base = VerificationAdapterResult(
-        'dart.mutation.strict', '1', 'dart_mutant', tool_version, mode,
+        'dart.mutation.strict', '2', 'dart_mutant', tool_version, mode,
         ('FAIL' if findings else 'PASS') if mutants else 'NOT_APPLICABLE', (),
         tuple(sorted(findings, key=lambda finding: (finding.path, finding.line, finding.column,
                                                   finding.severity, finding.code, finding.message))),
@@ -360,21 +577,24 @@ def run_dart_mutation(project_root, evaluation_paths, evaluation_mode):
         report_root.mkdir()
         if _inventory(root, shadow) != before or _inventory(root) != before:
             _error('Project inventory or bytes changed during mutation snapshot copying')
+        # Establish validity of the fresh canonical-derived snapshot before
+        # project tests can alter retained non-target analysis inputs.
+        _analyze(shadow, stdout_hash, stderr_hash)
+        _assert_targets(shadow, before)
         _execute(['dart', 'test', '--reporter=compact'], shadow, BASELINE_TIMEOUT_SECONDS,
                  stdout_hash, stderr_hash, 'Dart mutation green baseline')
-        # A baseline must not silently rewrite the actual applicable sources.
-        after_baseline = _inventory(shadow)
-        if _targets(after_baseline) != targets:
-            _error('Dart baseline changed the applicable mutation target inventory')
-        baseline_files = {relative: (mode, digest) for relative, mode, digest in after_baseline[1]}
-        for relative, mode, digest in before[1]:
-            if relative in targets and baseline_files[relative] != (mode, digest):
-                _error('Dart baseline changed an applicable mutation source')
+        _assert_targets(shadow, before)
         _execute(['dart_mutant', '--path', '.', '--parallel', '1', '--timeout', str(BASELINE_TIMEOUT_SECONDS),
                   '--threshold', '0', '--quiet', '--json', '--ai', 'none', '--output', str(report_root)],
                  shadow, MUTATION_TIMEOUT_SECONDS, stdout_hash, stderr_hash, 'Dart mutation engine')
-        mutants = _parse_report(report_root, targets)
+        _assert_targets(shadow, before)  # Engine restoration precedes report trust.
+        trusted_sources = {relative: (mode, digest) for relative, mode, digest in before[1] if relative in targets}
+        mutants = _parse_report(report_root, targets, shadow, trusted_sources)
+        _assert_targets(shadow, before)
+        for index, item in enumerate(mutants):
+            if item.record['status'] in {'Killed', 'Timeout'}:
+                _attest(root, before, temporary_root, index, item, stdout_hash, stderr_hash)
         if _inventory(root) != before:
             _error('Canonical project inventory or bytes changed during mutation verification')
-        return _result(evaluation_mode, mutants, tool_version=ENGINE_VERSION,
+        return _result(evaluation_mode, tuple(item.record for item in mutants), tool_version=ENGINE_VERSION,
                        stdout_hash=stdout_hash, stderr_hash=stderr_hash)

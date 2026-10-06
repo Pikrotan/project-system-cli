@@ -1456,6 +1456,137 @@ complexity/duplication, Stage 12/13 or upstream modification is included.
 not self-approve acceptance, mutation/regression quality closure or readiness
 to commit; independent main-chat integrity review is required.
 
+### Stage 11B: independent mutant validity and behavioral attestation
+
+`dart.mutation.strict@2` supersedes the provisional Stage 11A `@1` contract.
+The Stage 11A section above records the historical foundation, not a second
+selectable adapter. The Rule still selects `adapter: dart.mutation.strict`;
+the registry and result now bind version `2`. Rules/Evidence v1, common result
+validation, severity and exception governance are unchanged. Engine-reported
+v1 evidence is not interchangeable with independently attested v2 evidence.
+
+The engine remains pinned to `dart_mutant 0.1.0`, release commit
+`231c599c14e3a1bcafeb408a042f98cad15ea1f9`. Its `Mutation::new` encodes
+`start_line` as a 1-based tree-sitter row and `start_column` as a 1-based
+**UTF-8 byte column**. `end_line` must equal `start_line`, including multiline
+originals; `end_column - start_column` is the positive UTF-8 byte length of
+the original, **not** a visual same-line endpoint. LF bytes determine row
+starts; CRLF and non-ASCII bytes are preserved. The start must lie in the
+encoded row, the span must fit the baseline buffer, and its endpoints must
+be UTF-8 boundaries. The complete source must be valid UTF-8. Reconstruction
+is exactly `before + replacement.encode('utf-8') + after`. Descriptions are
+never reconstruction authority.
+
+Every mutant, including Survived/NoCoverage, requires a JSON `id` of 32
+lowercase hex characters matching the pinned engine's MD5 of UTF-8
+`<raw JSON file key>:<start_line>:<decoded original>:<replacement>`.
+Raw path spelling (including native separators and `./`) is used for this
+compatibility check; canonical path normalization remains the semantic
+identity. MD5 is engine compatibility, not a cryptographic security claim.
+Impossible spans, malformed IDs, source contradictions, duplicate identities,
+unsupported statuses or CompileError are ERROR. No original, ID, MD5 or byte
+offset is emitted into Evidence.
+
+Execution order is: version probe; trusted disposable engine-shadow copy;
+baseline static validity; green compact baseline (300 seconds); engine;
+independent engine-restoration proof; strict report parsing/reconstruction;
+independent replay of each Killed/Timeout in normalized mutant order. Baseline
+analysis precedes project-code execution so it attests the fresh
+canonical-derived snapshot, not a shadow potentially modified by tests through
+retained non-target configuration, test or package inputs. Existing target
+source-integrity checks run after analysis and after the compact baseline;
+this does not introduce a blanket non-target filesystem immutability policy. Before
+report trust, the engine-shadow applicable source inventory, modes and bytes
+must equal the initial trusted sources. Leftover mutations are ERROR, never
+repaired into canonical files.
+
+Static validity uses fixed `dart analyze --format=machine --no-plugins .`
+with 120 seconds and 16 MiB capture per stream. The existing qualified
+`dart.analyze` machine parser and severity/exit semantics are reused privately,
+without modifying old adapters. ERROR-free unmutated baseline is mandatory.
+Warnings/INFO are allowed, including their corresponding exit codes; malformed
+protocol, unexpected/contradictory exit, timeout or infrastructure failure is
+ERROR. Human analyzer prose is never verdict authority. Diagnostic/suite paths
+are checked for contained regular no-follow ancestry before the reused parsers
+resolve them.
+
+Each Killed/Timeout gets a **fresh separate replay shadow copied from unchanged
+canonical state**, not from the engine workspace or a previous replay. The
+canonical complete applicable inventory/bytes are checked against the initial
+snapshot before/after each copy and after replay. No hardlinks, Git worktrees,
+stash/reset or generic sandbox are used. The target must match trusted bytes
+and mode before an owned no-follow handle write; exact mutated bytes and all
+other applicable source bytes/modes/inventory are verified before and after
+replay commands. Symlink/reparse/special ancestry fails closed. Disposable
+workspaces are cleaned on success and failure; no canonical repair is attempted.
+
+The mutant must also pass ERROR-free static validity before fixed
+`dart test --reporter=json` (300 seconds, 16 MiB per stream, `shell=False`).
+The existing qualified `dart.test` JSON reporter parser and structured
+exit/verdict consistency are reused privately. Killed requires structured FAIL;
+assertion failures and structured runtime errors count after static validity.
+PASS, NOT_APPLICABLE, timeout, malformed protocol or infrastructure failure
+contradict Killed and produce ERROR. Timeout requires a second independent
+timeout at the same 300-second budget; structured FAIL, PASS or any different
+process/protocol outcome is ERROR. No Killed/Timeout status conversion occurs.
+
+Survived/NoCoverage remain conservative FAIL with the stable Stage 11A findings;
+they require reconstruction/ID checks but not behavioral replay. **ERROR
+dominates FAIL**, even in mixed reports. PASS requires at least one mutant,
+valid reconstruction of every mutant, independent attestation of every positive
+status, and no Survived/NoCoverage. Bounded-empty/no-target applicability still
+returns NOT_APPLICABLE without tool execution.
+
+The stable semantic payload is exactly:
+
+```json
+{
+  "schema_version": 2,
+  "attestation": "independent_replay_v1",
+  "mutants": [
+    {
+      "path": "lib/main.dart",
+      "start_line": 1,
+      "start_column": 28,
+      "end_line": 1,
+      "end_column": 29,
+      "mutator_name": "Arithmetic",
+      "replacement": "-",
+      "status": "Killed"
+    }
+  ]
+}
+```
+
+The same eight normalized mutant fields are sorted canonically. There are no
+extra per-mutant semantic fields. Analyzer/replay output, originals, engine
+IDs/descriptions, raw path spelling, offsets, scores, durations, PIDs and
+temporary paths are excluded. Bounded version/baseline/engine/analyzer/replay
+transport contributes only to raw provenance hashes, not semantic/result hashes
+or Rule Evidence. Findings and controlled errors never expose source originals,
+replacement text, transcripts, exception secrets or temporary paths.
+
+Existing `verify_sync` binds version-2 Rule Evidence and `finalize_sync` freshly
+executes this adapter through the existing lifecycle. Equivalent report order,
+temporary paths and allowed raw analyzer/replay transport preserve exact binding
+and dry-run prepared state. Fresh Survived/NoCoverage changes Evidence; fresh
+replay PASS or mutant analyzer ERROR produces Rule ERROR. All block stale
+finalization without changing canonical/Git identity. There is no second
+mutation-specific SYNC mechanism.
+
+This is intentionally expensive: one full copy and analyzer/test pair per
+positive mutant, plus baseline analysis and the engine. Sequential isolated
+copies avoid cross-mutant state contamination, but are not an OS sandbox or
+atomic filesystem snapshot. Project code/tools can have external effects;
+absolute package references, non-relocatable `.dart_tool`, installed environment,
+flaky tests and nondeterministic timeout transitions remain limitations. Such
+observable replay contradictions fail closed, not silently downgraded. Mocked
+qualification does not attest a live Dart toolchain. No sampling/cache,
+thresholds, Flutter mutation, generator or upstream changes are introduced.
+
+**Stage 11 is NOT closed. 11C remains.** Stage 11B does not self-approve
+acceptance, commit readiness or final regression-strength closure.
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.

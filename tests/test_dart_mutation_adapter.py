@@ -9,6 +9,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+from test_dart_mutation_attestation import test_stream
 
 from project_system import verification_adapters as adapters
 from project_system.process_runner import ProcessOutputLimitExceeded
@@ -29,7 +30,7 @@ def report(statuses=('Killed',), path='./lib/main.dart'):
     return {'schemaVersion': '1', 'projectRoot': '/volatile/shadow',
             'thresholds': {'high': 80, 'low': 60}, 'mutationScore': 0,
             'files': {path: {'language': 'dart', 'mutants': [
-                {'id': str(index), 'description': 'volatile description',
+                {'id': 'fixture', 'description': 'volatile description',
                  'mutatorName': 'Arithmetic', 'replacement': '-', 'status': status,
                  'location': {'start': {'line': 1, 'column': index + 25},
                               'end': {'line': 1, 'column': index + 26}}}
@@ -39,6 +40,7 @@ def report(statuses=('Killed',), path='./lib/main.dart'):
 def fake(monkeypatch, payload=None, *, hook=None, stdout='', stderr=''):
     adapter = module()
     calls = []
+    timeout_mutations = []
 
     def run(argv, **policy):
         calls.append((tuple(argv), policy))
@@ -50,9 +52,39 @@ def fake(monkeypatch, payload=None, *, hook=None, stdout='', stderr=''):
             return subprocess.CompletedProcess(argv, 0, 'dart_mutant 0.1.0\n', '')
         if argv == ['dart', 'test', '--reporter=compact']:
             return subprocess.CompletedProcess(argv, 0, stdout, stderr)
+        if argv == ['dart', 'analyze', '--format=machine', '--no-plugins', '.']:
+            return subprocess.CompletedProcess(argv, 0, '', stderr)
+        if argv == ['dart', 'test', '--reporter=json']:
+            if any((policy['cwd'] / path).read_bytes() == mutated for path, mutated in timeout_mutations):
+                raise subprocess.TimeoutExpired(argv, policy['timeout'])
+            return subprocess.CompletedProcess(argv, 1, test_stream(policy['cwd']), stderr)
         assert argv[:3] == ['dart_mutant', '--path', '.']
+        selected = payload if payload is not None else report()
+        if isinstance(selected.get('files'), dict):
+            for raw_path, file in selected['files'].items():
+                path = raw_path.replace('\\', '/').removeprefix('./')
+                if not isinstance(file, dict) or not isinstance(file.get('mutants'), list):
+                    continue
+                for mutant in file['mutants']:
+                    # Fixture IDs are signed from the actual engine baseline,
+                    # not assumed arbitrary IDs as in the provisional v1 tests.
+                    if not isinstance(mutant, dict) or mutant.get('id') != 'fixture':
+                        continue
+                    try:
+                        source = (policy['cwd'] / path).read_bytes()
+                        start, end = mutant['location']['start'], mutant['location']['end']
+                        starts = [0] + [i + 1 for i, byte in enumerate(source) if byte == 10]
+                        offset = starts[start['line'] - 1] + start['column'] - 1
+                        stop = offset + end['column'] - start['column']
+                        original = source[offset:stop].decode('utf-8')
+                        replacement = mutant['replacement']
+                        mutant['id'] = hashlib.md5(f'{raw_path}:{start["line"]}:{original}:{replacement}'.encode()).hexdigest()
+                        if mutant['status'] == 'Timeout':
+                            timeout_mutations.append((path, source[:offset] + replacement.encode() + source[stop:]))
+                    except (OSError, KeyError, TypeError, IndexError, UnicodeError):
+                        pass  # Deliberately malformed report remains malformed.
         output = Path(argv[-1]) / 'mutation-report.json'
-        output.write_text(json.dumps(payload if payload is not None else report()), encoding='utf-8')
+        output.write_text(json.dumps(selected), encoding='utf-8')
         return subprocess.CompletedProcess(argv, 0, stdout, stderr)
 
     monkeypatch.setattr(adapter, 'run_process', run)
@@ -61,13 +93,15 @@ def fake(monkeypatch, payload=None, *, hook=None, stdout='', stderr=''):
 
 def evaluate(root, paths=None):
     module()  # Missing implementation is RED, not a false expected ERROR.
+    if not (root / 'test/example_test.dart').exists():
+        write(root, 'test/example_test.dart')
     return adapters.evaluate_verification_adapter('dart.mutation.strict', root, evaluation_paths=paths)
 
 
 def test_registry_and_frozen_old_contracts():
     spec = adapters.VERIFICATION_ADAPTER_REGISTRY['dart.mutation.strict']
     assert spec.implementation is module().run_dart_mutation
-    assert (spec.adapter_id, spec.version, spec.global_input_patterns) == ('dart.mutation.strict', '1', ('**',))
+    assert (spec.adapter_id, spec.version, spec.global_input_patterns) == ('dart.mutation.strict', '2', ('**',))
     assert spec.executes_project_code and spec.uses_semantic_hash and not spec.uses_network
     expected = {'dart.analyze': (False, False, False, ('**/*.dart', '**/*.yaml', '**/pubspec.lock')),
                 'dart.analyze.strict': (False, True, False, ('**',)),
@@ -112,6 +146,7 @@ def test_actual_non_lib_domain(tmp_path, monkeypatch, source):
 
 def test_exact_order_bounds_shadow_retention_and_cleanup(tmp_path, monkeypatch):
     write(tmp_path)
+    write(tmp_path, 'test/example_test.dart', b'fixture\x00bytes')
     retained = ('test/a_test.dart', '.dart_tool/package_config.json', 'pubspec.yaml', 'fixtures/input.bin')
     excluded = ('.git', '.generated', 'build', 'node_modules', '__pycache__', '.pytest_cache',
                 '.mypy_cache', '.ruff_cache', '.cache', '.tox', '.nox', 'coverage', 'mutation-reports')
@@ -132,18 +167,24 @@ def test_exact_order_bounds_shadow_retention_and_cleanup(tmp_path, monkeypatch):
             assert (shadow / relative).read_bytes() == b'fixture\x00bytes'
         for directory in excluded:
             assert not (shadow / directory).exists()
-        if argv[0] == 'dart_mutant':
-            write(shadow, data=b'mutated only in shadow')
 
     calls = fake(monkeypatch, hook=hook)
     result = evaluate(tmp_path, ('README.md',))
     assert result.verification_status == 'PASS' and result.evaluation_mode == 'project_wide_invalidation'
-    assert [argv[:2] for argv, _ in calls] == [('dart_mutant', '--version'), ('dart', 'test'), ('dart_mutant', '--path')]
-    assert calls[-1][0] == ('dart_mutant', '--path', '.', '--parallel', '1', '--timeout', '300',
-                           '--threshold', '0', '--quiet', '--json', '--ai', 'none', '--output', calls[-1][0][-1])
+    assert [argv for argv, _ in calls] == [
+        ('dart_mutant', '--version'),
+        ('dart', 'analyze', '--format=machine', '--no-plugins', '.'),
+        ('dart', 'test', '--reporter=compact'),
+        ('dart_mutant', '--path', '.', '--parallel', '1', '--timeout', '300',
+         '--threshold', '0', '--quiet', '--json', '--ai', 'none', '--output', calls[3][0][-1]),
+        ('dart', 'analyze', '--format=machine', '--no-plugins', '.'),
+        ('dart', 'test', '--reporter=json'),
+    ]
+    assert calls[3][0] == ('dart_mutant', '--path', '.', '--parallel', '1', '--timeout', '300',
+                          '--threshold', '0', '--quiet', '--json', '--ai', 'none', '--output', calls[3][0][-1])
     for index, (_, policy) in enumerate(calls):
         assert policy == dict(cwd=policy['cwd'], capture_output=True, text=True, encoding='utf-8',
-                              check=False, shell=False, timeout=(30, 300, 7200)[index],
+                              check=False, shell=False, timeout=(30, 120, 300, 7200, 120, 300)[index],
                               max_capture_bytes=16 * 1024 * 1024)
     assert all(not root.exists() for root in roots)
     assert before == {p.relative_to(tmp_path).as_posix(): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
@@ -158,7 +199,9 @@ def test_process_failure_is_sanitized_error_and_cleanup(tmp_path, monkeypatch, s
     secret = 'SECRET PRIVATE TRANSCRIPT'
 
     def hook(argv, policy):
-        current = 'version' if argv[-1] == '--version' else 'baseline' if argv[0] == 'dart' else 'mutation'
+        current = ('version' if argv[-1] == '--version' else
+                   'baseline' if argv[-1] == '--reporter=compact' else
+                   'analysis' if argv[0] == 'dart' else 'mutation')
         reached.append(current)
         if current != 'version':
             roots.append(policy['cwd'].parent)
@@ -181,7 +224,7 @@ def test_process_failure_is_sanitized_error_and_cleanup(tmp_path, monkeypatch, s
     assert secret not in str(caught.value)
     assert all(not root.exists() for root in roots)
     if stage == 'baseline':
-        assert reached == ['version', 'baseline']
+        assert reached == ['version', 'analysis', 'baseline']
 
 
 @pytest.mark.parametrize('version', ['dart_mutant 0.1.1', 'dart_mutant 0.1.0 junk',
@@ -201,6 +244,7 @@ def test_exact_version_rejection(tmp_path, monkeypatch, version):
                                            (('Survived', 'NoCoverage'), 'FAIL')])
 def test_statuses_and_complete_fixed_findings(tmp_path, monkeypatch, statuses, verdict):
     write(tmp_path)
+    write(tmp_path, 'test/example_test.dart')
     fake(monkeypatch, report(statuses), stdout='SECRET', stderr='SECRET')
     result = evaluate(tmp_path)
     assert result.verification_status == verdict and result.exit_code == 0
@@ -299,10 +343,11 @@ def test_malformed_or_missing_json(tmp_path, monkeypatch, raw):
 
 def test_semantic_inventory_exact_and_volatile_fields(tmp_path, monkeypatch):
     write(tmp_path)
+    write(tmp_path, 'test/example_test.dart')
     payload = report(('Survived', 'Killed'))
     fake(monkeypatch, payload, stdout='log1')
     first = evaluate(tmp_path)
-    expected = {'schema_version': 1, 'mutants': [
+    expected = {'schema_version': 2, 'attestation': 'independent_replay_v1', 'mutants': [
         {'path': 'lib/main.dart', 'start_line': 1, 'start_column': i + 25, 'end_line': 1,
          'end_column': i + 26, 'mutator_name': 'Arithmetic', 'replacement': '-', 'status': status}
         for i, status in enumerate(('Survived', 'Killed'))]}
@@ -313,7 +358,7 @@ def test_semantic_inventory_exact_and_volatile_fields(tmp_path, monkeypatch):
     payload['thresholds'] = {'high': 0, 'low': 0}
     payload['files']['./lib/main.dart']['mutants'].reverse()
     for mutant in payload['files']['./lib/main.dart']['mutants']:
-        mutant['id'], mutant['description'] = 'changed', 'SECRET'
+        mutant['description'] = 'SECRET'
     fake(monkeypatch, payload, stdout='log2', stderr='noise')
     second = evaluate(tmp_path)
     assert first.semantic_sha256 == second.semantic_sha256 and first.result_sha256 == second.result_sha256
@@ -323,7 +368,8 @@ def test_semantic_inventory_exact_and_volatile_fields(tmp_path, monkeypatch):
 @pytest.mark.parametrize('field', ['path', 'start_line', 'start_column', 'end_line', 'end_column',
                                  'mutator_name', 'replacement', 'status'])
 def test_every_semantic_field_changes_hash(tmp_path, monkeypatch, field):
-    write(tmp_path)
+    write(tmp_path, data=b'int add(int a, int b) => a + b;\n' * 3)
+    write(tmp_path, 'test/example_test.dart')
     write(tmp_path, 'bin/a.dart')
     payload = report()
     fake(monkeypatch, payload)
@@ -332,13 +378,14 @@ def test_every_semantic_field_changes_hash(tmp_path, monkeypatch, field):
     if field == 'path':
         payload['files']['bin/a.dart'] = payload['files'].pop('./lib/main.dart')
     elif field in ('start_line', 'end_line'):
-        mutant['location']['end']['line'] = 3
-        if field == 'start_line':
-            mutant['location']['start']['line'] = 2
+        # Pinned v2 end_line is constrained to start_line, not independently
+        # selectable. Both encoded coordinates move to a real baseline row.
+        mutant['location']['start']['line'] = mutant['location']['end']['line'] = 2 if field == 'start_line' else 3
     elif field in ('start_column', 'end_column'):
         mutant['location']['start' if field.startswith('start') else 'end']['column'] -= 1 if field.startswith('start') else -1
     else:
         mutant[{'mutator_name': 'mutatorName'}.get(field, field)] = {'status': 'Timeout', 'replacement': '+', 'mutator_name': 'Other'}[field]
+    mutant['id'] = 'fixture'
     fake(monkeypatch, payload)
     second = evaluate(tmp_path)
     assert first.semantic_sha256 != second.semantic_sha256 and first.result_sha256 != second.result_sha256
@@ -375,6 +422,7 @@ def test_unsafe_snapshot_input(tmp_path, monkeypatch, kind):
 def test_tampered_result_rejected(tmp_path, monkeypatch, field, value):
     module()
     write(tmp_path)
+    write(tmp_path, 'test/example_test.dart')
     fake(monkeypatch)
     result = replace(evaluate(tmp_path), **{field: value})
     with pytest.raises(adapters.VerificationAdapterError):
@@ -424,7 +472,7 @@ def test_baseline_cannot_change_target_domain_or_bytes(tmp_path, monkeypatch, ch
     write(tmp_path)
 
     def hook(argv, policy):
-        if argv[0] == 'dart':
+        if argv[-1] == '--reporter=compact':
             if change == 'delete':
                 (policy['cwd'] / 'lib/main.dart').unlink()
             else:
@@ -433,7 +481,7 @@ def test_baseline_cannot_change_target_domain_or_bytes(tmp_path, monkeypatch, ch
     calls = fake(monkeypatch, hook=hook)
     with pytest.raises(adapters.VerificationAdapterError):
         evaluate(tmp_path)
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert (tmp_path / 'lib/main.dart').read_bytes() == b'int add(int a, int b) => a + b;\n'
 
 
@@ -473,6 +521,7 @@ def test_contradictory_status_for_one_identity_is_error(tmp_path, monkeypatch):
 
 def test_native_windows_relative_report_path(tmp_path, monkeypatch):
     write(tmp_path)
+    write(tmp_path, 'test/example_test.dart')
     fake(monkeypatch, report(path='.\\lib\\main.dart'))
     assert evaluate(tmp_path).verification_status == 'PASS'
 
@@ -546,13 +595,14 @@ def test_large_copy_uses_bounded_reads_and_preserves_mode(tmp_path, monkeypatch)
     monkeypatch.setattr(osv_scan_adapter, '_open_binary', ObservedStream)
 
     def hook(argv, policy):
-        if argv[0] == 'dart':
+        if argv[-1] == '--reporter=compact':
             assert (policy['cwd'] / 'lib/main.dart').read_bytes() == source.read_bytes()
             assert stat.S_IMODE((policy['cwd'] / 'lib/main.dart').stat().st_mode) == before
 
+    write(tmp_path, 'test/example_test.dart')
     calls = fake(monkeypatch, hook=hook)
     assert evaluate(tmp_path).verification_status == 'PASS'
-    assert len(calls) == 3
+    assert len(calls) == 6
     assert len(reads) >= 16
 
 
@@ -579,12 +629,12 @@ def test_rule_boundary_maps_red_baseline_to_error(tmp_path, monkeypatch):
     module()
     write(tmp_path)
     calls = fake(monkeypatch, hook=lambda argv, _: subprocess.CompletedProcess(argv, 1, 'SECRET', '')
-                 if argv[0] == 'dart' else None)
+                 if argv[-1] == '--reporter=compact' else None)
     result = evaluate_checker('code.verification', RuleEvaluationContext(tmp_path, 'sync_verify', {}, True),
                               {'adapter': 'dart.mutation.strict'})
     assert result.raw_status == 'ERROR'
-    assert result.details == {'adapter_id': 'dart.mutation.strict', 'adapter_version': '1'}
-    assert len(calls) == 2
+    assert result.details == {'adapter_id': 'dart.mutation.strict', 'adapter_version': '2'}
+    assert len(calls) == 3
 
 
 def test_copy_detects_mid_read_changes_before_any_tool(tmp_path, monkeypatch):
@@ -626,10 +676,11 @@ def test_temporary_base_inside_canonical_root_is_rejected_before_creation(tmp_pa
 
 def test_baseline_and_mutant_have_the_same_fixed_test_suite_budget(tmp_path, monkeypatch):
     write(tmp_path)
+    write(tmp_path, 'test/example_test.dart')
     calls = fake(monkeypatch)
     assert evaluate(tmp_path).verification_status == 'PASS'
-    baseline_argv, baseline_policy = calls[1]
-    mutation_argv, mutation_policy = calls[2]
+    baseline_argv, baseline_policy = calls[2]
+    mutation_argv, mutation_policy = calls[3]
     assert baseline_argv == ('dart', 'test', '--reporter=compact')
     assert baseline_policy['timeout'] == 300
     assert mutation_argv == ('dart_mutant', '--path', '.', '--parallel', '1', '--timeout', '300',
@@ -647,9 +698,9 @@ def test_same_location_distinct_mutants_have_complete_findings_and_private_evide
     payload = report((status,))
     mutants = payload['files']['./lib/main.dart']['mutants']
     mutants[0].update(mutatorName='Arithmetic add-to-sub', replacement='PRIVATE_REPLACEMENT_A',
-                      description='PRIVATE_ORIGINAL_SOURCE', id='PRIVATE_TOOL_ID')
+                      description='PRIVATE_ORIGINAL_SOURCE', id='fixture')
     mutants.append(copy.deepcopy(mutants[0]))
-    mutants[1].update(mutatorName='Arithmetic add-to-mul', replacement='PRIVATE_REPLACEMENT_B', id='OTHER_TOOL_ID')
+    mutants[1].update(mutatorName='Arithmetic add-to-mul', replacement='PRIVATE_REPLACEMENT_B', id='fixture')
     fake(monkeypatch, payload, stdout='PRIVATE_STDOUT', stderr='PRIVATE_STDERR')
     result = evaluate(tmp_path)  # Includes real generic result validation.
     assert result.verification_status == 'FAIL'
@@ -665,7 +716,7 @@ def test_same_location_distinct_mutants_have_complete_findings_and_private_evide
                    'end_line': 1, 'end_column': 26, 'mutator_name': mutant['mutatorName'],
                    'replacement': mutant['replacement'], 'status': status} for mutant in mutants]
     normalized.sort(key=lambda mutant: tuple(mutant[key] for key in module().MUTANT_FIELDS))
-    expected = json.dumps({'schema_version': 1, 'mutants': normalized}, sort_keys=True,
+    expected = json.dumps({'schema_version': 2, 'attestation': 'independent_replay_v1', 'mutants': normalized}, sort_keys=True,
                           separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()
     assert result.semantic_sha256 == hashlib.sha256(expected).hexdigest()
     registry = {'schema_version': 1, 'profile': 'project-system-rules-v1', 'rules': {'QUALITY-001': {

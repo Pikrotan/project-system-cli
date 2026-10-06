@@ -73,11 +73,20 @@ class VerificationAdapterSpec:
     uses_network: bool = False
 
 
-from . import dart_analyze_adapter, dart_format_adapter, dart_test_adapter, osv_scan_adapter
+from . import dart_analyze_adapter, dart_format_adapter, dart_mutation_adapter, dart_test_adapter, osv_scan_adapter
 
 
 VERIFICATION_ADAPTER_REGISTRY = MappingProxyType(
     {
+        "dart.mutation.strict": VerificationAdapterSpec(
+            adapter_id="dart.mutation.strict",
+            version="1",
+            implementation=dart_mutation_adapter.run_dart_mutation,
+            global_input_patterns=("**",),
+            executes_project_code=True,
+            uses_semantic_hash=True,
+            uses_network=False,
+        ),
         "dart.analyze": VerificationAdapterSpec(
             adapter_id="dart.analyze",
             version="1",

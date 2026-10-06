@@ -1296,6 +1296,166 @@ tests require neither live Dart nor network and do not attest those live systems
 **Next: Stage 11 — Mutation and Regression Quality.** No Stage 11 behavior is
 implemented or implied by this closure.
 
+### Stage 11A: strict Dart mutation-quality foundation
+
+`dart.mutation.strict@1` reuses `Project Rule -> code.verification ->
+Verification Adapter -> Rule Evidence v1`. Its registry metadata is
+`executes_project_code=True`, `uses_semantic_hash=True`, `uses_network=False`,
+`global_input_patterns=("**",)`. Empty bounded paths are NOT_APPLICABLE without
+any process invocation; every non-empty bounded set becomes
+`project_wide_invalidation`; unbounded evaluation is `project_wide`.
+There is no selective mutation mapping or new Rule/Evidence/checker schema.
+Existing adapters' contracts are unchanged.
+
+**Pinned compatibility contract:** only `dart_mutant 0.1.0`, upstream release
+commit `231c599c14e3a1bcafeb408a042f98cad15ea1f9`, is supported. The fixed
+`dart_mutant --version` probe must exit zero and emit exactly
+`dart_mutant 0.1.0` (with optional terminal newline). Missing executable,
+malformed output, nonzero probe or any other version is ERROR. The probe
+attests the version string, not a binary digest or upstream commit identity.
+The adapter never installs/downloads a tool or makes network requests.
+
+The pinned release's declared `lib/**/*.dart` CLI glob is **not authoritative**:
+its discovery does not consume `args.glob`. With `--path .`, the actual
+engine-visible domain is all applicable regular Dart sources in the shadow
+tree, not lib-only. `bin/`, `tool/`, `example/`, root sources and `.dart_tool/`
+can be eligible where present. No production-code meaning is inferred from
+these directories. No `--glob` is passed and it is not claimed to restrict
+scope. Independent discovery freezes the pinned engine exclusions:
+
+```text
+**/*.g.dart
+**/*.freezed.dart
+**/*.mocks.dart
+**/generated/**
+**/test/**
+**/*_test.dart
+```
+
+These match case-sensitively against engine-style `./` relative paths, with
+wildcards spanning separators as in the pinned Rust glob defaults. Tests are
+retained for execution but excluded from mutation targets by these defaults.
+Adapter-owned shadow exclusions, at any directory depth, are `.git`,
+`.generated`, `build`, `node_modules`, `__pycache__`, `.pytest_cache`,
+`.mypy_cache`, `.ruff_cache`, `.cache`, `.tox`, `.nox`, `coverage` and
+`mutation-reports` (case-insensitive directory-name comparison). No additional
+product-code exclusions restore a lib-only model. Ordinary project files,
+fixtures and `.dart_tool` are retained. No independently discovered eligible
+source means NOT_APPLICABLE with no version, baseline or mutation invocation.
+
+**Shadow and green-baseline precondition:** canonical files are never
+intentionally used as mutation/baseline cwd or written back. A disposable
+temporary root outside the canonical tree contains separate `project/` and
+`report/` directories. Copying uses regular-file no-follow reads, bounded
+1 MiB chunks, byte digests and file modes, rejects symlinks/reparse/special
+entries in retained subtrees, and checks ancestry/observable inventory and
+content drift. It does not create hardlinks, touch Git metadata or use Git
+worktree/stash/reset. Success and errors clean the temporary root.
+
+Copy consistency is observable, **not** a globally atomic OS snapshot;
+concurrent edits cannot be made globally atomic. The pinned engine does not
+establish its own green baseline. After the version probe and trusted copy,
+the adapter runs exactly `dart test --reporter=compact` in the shadow.
+Only exit zero establishes the prerequisite. Red baseline, missing Dart,
+timeout, capture overflow, execution exception or malformed process result
+is ERROR, never mutation FAIL, and prevents mutation execution. Baseline
+changes to the eligible source inventory/bytes/modes also fail closed.
+An independent `dart.test` Rule does not replace this prerequisite.
+
+The mutation argv is fixed, in this order:
+
+```text
+dart_mutant --path . --parallel 1 --timeout 300 --threshold 0 --quiet --json --ai none --output <temporary-root>/report
+```
+
+Sequential execution is mandatory. Threshold zero neutralizes the external
+tool's score gate: Project System owns the verdict through mutant statuses.
+No sampling, incremental/base-ref, coverage input, operator selection, AI,
+custom test command, project glob/excludes/threshold or arbitrary flags are
+accepted. All processes use `shell=False`, UTF-8 and bounded stdout/stderr
+capture of 16 MiB **per stream**. Version, baseline and whole mutation-process
+timeouts are respectively 30, 300 and 7200 seconds; the engine's per-mutant
+timeout is 300 seconds, using the same fixed test-suite budget as the baseline
+and existing `dart.test` adapter, not a new project policy. This avoids accepting
+mutant Timeouts merely because the green unmutated suite needs more than a
+shorter mutant budget. Mutation exit must be zero; **exit 1 is ERROR**, not a
+quality failure. Signals, missing tools, malformed objects or transport
+failures are sanitized at the existing Adapter error boundary.
+
+**Machine protocol:** only no-follow regular `report/mutation-report.json`
+(maximum 64 MiB) is parsed. Require the pinned `schemaVersion: "1"`, `files`
+mapping, `language: "dart"`, mutant arrays and well-formed positive integer
+start/end positions in non-reversed order. Native relative `./` / `.\\` and
+Windows separators normalize to repository-relative POSIX paths; absolute,
+traversal, noncanonical, excluded and non-target paths fail closed. Every
+reported file must be an independently discovered eligible source. Duplicate
+JSON keys, path aliases, duplicate mutant identities (including contradictory
+statuses), non-finite numbers, malformed/missing report or unsupported
+structure/language/status are ERROR. Target sources with an empty inventory
+are ERROR, not implicit PASS. Console prose never fabricates evidence.
+
+The pinned JSON statuses are `Killed`, `Timeout`, `Survived`, `NoCoverage`,
+`CompileError`. At least one mutant, all Killed/Timeout, means PASS.
+Survived/NoCoverage with no infrastructure status means FAIL. CompileError,
+and unsupported RuntimeError/Pending/Ignored/unknown values, mean ERROR,
+even if other mutants survive. Do not claim the pinned release emits every
+Stryker status. Tool IDs, descriptions, scores, thresholds and projectRoot
+are not semantic authority.
+
+**Semantic schema v1** hashes canonical UTF-8 JSON (sorted keys, compact
+separators, no non-finite values):
+
+```json
+{"schema_version":1,"mutants":[{"path":"lib/example.dart","start_line":1,"start_column":1,"end_line":1,"end_column":2,"mutator_name":"Arithmetic","replacement":"-","status":"Killed"}]}
+```
+
+Each record contains exactly those eight fields; the complete inventory sorts
+by them in the listed order. No target source inventory, root, temporary path,
+ID, description, time/duration/PID, score, threshold, HTML or transcript enters
+the semantic digest. Raw framed version/baseline/engine stdout/stderr digests
+remain Adapter-boundary provenance but are absent from semantic result hashes
+and Rule Evidence. Equivalent ordering/logs/temporary roots/IDs/descriptions
+preserve hashes and Evidence; any mutant identity/status change changes them.
+
+Survived/NoCoverage findings use ERROR severity, canonical path/start position,
+codes `dart.mutation.survived` / `dart.mutation.no_coverage`, and stable messages
+`Mutation survived the Dart test suite (<mutator_name>)` /
+`Mutation has no test coverage (<mutator_name>)`, using only the normalized
+semantic mutator name as the distinguishing message value. Each undetected
+mutant emits its own finding; different mutator names at the same start
+position/status remain distinct. No replacement, original source, tool ID,
+temporary path or raw transport text is exposed. Findings are sorted, not
+silently deduplicated by the producer. If separate identities remain
+indistinguishable under these permitted finding fields, the unchanged generic
+boundary rejects the result as ERROR rather than losing a mutant. Existing Rule severity
+controls blocking/nonblocking FAIL and existing exception governance applies.
+Infrastructure ERROR is never WAIVED. No numeric score-policy language exists.
+
+**Limits:** Dart-only, no Flutter claim or auto-switch to `flutter test`.
+The shadow is not an OS sandbox: project tests can perform external side
+effects/network access, absolute package references can escape the shadow,
+and installed tools/environment are not fully attested. Retaining
+`.dart_tool` does not guarantee its package configuration is relocatable.
+The adapter does not request network access, but cannot enforce offline test
+behavior. **Classification-validity trust boundary:** `Killed` is
+engine-reported under pinned v0.1.0. Its runner maps `dart test` exit zero to
+Survived and nonzero to Killed; thus a mutant whose test process exits nonzero
+because of a compile/type failure may be classified as Killed rather than a
+test-detected behavioral failure. A separately emitted `CompileError` remains
+ERROR. Stage 11A establishes **provisional engine-reported mutation evidence**,
+not full mutant-validity attestation. **Stage 11B MUST resolve or contain this
+classification-validity gap before Stage 11 can close and before mutation
+evidence is treated as final authoritative regression-strength proof.**
+Stage 11A does not parse human Dart-test stderr, vendor/patch the tool or build
+a replacement mutation runner. Mocked tests attest the adapter
+contract, not live toolchain correctness. No Flutter, coverage-percentage
+gate, sampling, cache, nightly scheduling, AI mutations, SAST, secrets,
+complexity/duplication, Stage 12/13 or upstream modification is included.
+
+**Stage 11 is NOT closed. 11B/11C remain.** This implementation candidate does
+not self-approve acceptance, mutation/regression quality closure or readiness
+to commit; independent main-chat integrity review is required.
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.

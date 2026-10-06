@@ -14,6 +14,8 @@ from .modules import catalog, enable, disable
 from .tasking import task, bootstrap, prepare_pr
 from .task_specification import TaskSpecificationError
 from .task_obligations import TaskObligationsError
+from .task_baseline import TaskBaselineError
+from .task_verification import TaskVerifyError, verify_task
 from .sync_planning import plan_sync, SyncPlanError
 from .sync_verification import verify_sync, SyncVerifyError
 from .sync_finalization import finalize_sync, SyncFinalizeError
@@ -60,7 +62,7 @@ def main(argv=None):
     sp.add_parser('modules')
     q=sp.add_parser('enable'); q.add_argument('module')
     q=sp.add_parser('disable'); q.add_argument('module')
-    q=sp.add_parser('task'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='implement'); q.add_argument('--skill',action='append',default=[])
+    q=sp.add_parser('task'); q.add_argument('target'); q.add_argument('verify_target',nargs='?'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default=None); q.add_argument('--skill',action='append',default=[])
     q=sp.add_parser('sync'); q.add_argument('target',help='existing object ID, "auto", "watch", "pull", "intake", "plan", "verify", "finalize", or "migrate-bindings"'); q.add_argument('pack',nargs='?',help='SYNC action, REQUEST/PACK path, or pack_id'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--commit',action='store_true',help='explicitly commit the verified canonical state'); q.add_argument('--push',action='store_true',help='explicitly push an already verified SYNC commit'); q.add_argument('--message',help='custom commit message; valid only with --commit'); q.add_argument('--complete',action='store_true',help='explicitly complete a non-commit GitHub transport outcome'); q.add_argument('--outcome',choices=['reviewed-no-change','rejected','abandoned'],help='terminal outcome; requires --complete'); q.add_argument('--reason',help='required human reason for --complete'); q.add_argument('--apply',action='store_true',help='apply a deterministic sync binding migration audit'); q.add_argument('--plan',action='store_true',help='plan the bound pack after intake/pull'); q.add_argument('--issue',type=int,help='select one GitHub transport Issue; valid only with sync pull'); q.add_argument('--once',action='store_true',help='run exactly one bounded automatic pickup cycle; valid only with sync watch'); q.add_argument('--interval',type=int,help='watcher/scheduler interval in seconds (60..3600, default 120)'); q.add_argument('--replace',action='store_true',help='replace this project automatic SYNC registration after ownership proof'); q.add_argument('--json',dest='json_output',action='store_true',help='emit machine-readable automatic SYNC status'); q.add_argument('--registration',help='validated automatic SYNC registration ID; internal run command only')
     q=sp.add_parser('google',help='Google Workspace / Designer Bridge')
     google_commands=q.add_subparsers(dest='google_command',required=True)
@@ -140,8 +142,18 @@ def main(argv=None):
     elif args.cmd=='disable':
         notes=disable(root,args.module); print('Disabled',args.module); [print(x) for x in notes]
     elif args.cmd=='task':
-        try: out,_=task(root,args.target,args.mode,args.budget,False,args.skill); print(out)
-        except (SkillError,TaskSpecificationError,TaskObligationsError) as exc: print(f'task failed: {exc}',file=sys.stderr); sys.exit(2)
+        if args.target=='verify':
+            if not args.verify_target: p.error('project task verify requires TARGET')
+            if args.mode is not None or args.skill: p.error('task verify does not accept creation-only --mode/--skill')
+            try:
+                out,report=verify_task(root,args.verify_target,args.budget)
+                print(f'{out}\nTask deterministic verification: {report["verification_result"]}')
+            except TaskVerifyError as exc:
+                print(f'task verify failed [{exc.category}]: {exc}',file=sys.stderr); sys.exit(exc.exit_code)
+        else:
+            if args.verify_target is not None: p.error('project task accepts exactly one TARGET')
+            try: out,_=task(root,args.target,args.mode if args.mode is not None else 'implement',args.budget,False,args.skill); print(out)
+            except (SkillError,TaskSpecificationError,TaskObligationsError,TaskBaselineError) as exc: print(f'task failed: {exc}',file=sys.stderr); sys.exit(2)
     elif args.cmd=='google':
         action=args.workspace_command
         try:

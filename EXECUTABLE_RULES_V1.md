@@ -1807,6 +1807,148 @@ Rules or completion Evidence, compare implementation diffs with task write scope
 map criteria to tests/checkers, assign outcomes, finalize tasks, or grant human
 approval. This implementation candidate is not self-approved Stage 12B acceptance.
 
+### Stage 12C: Task Verification lifecycle
+
+This is a **Stage 12C candidate**, not independent acceptance or Stage 12 closure.
+The published Task Specification v1 and Task Obligations v1 byte contracts remain
+unchanged. `project task <TARGET> [--budget small|medium|large]` now also creates
+`task-baseline.json` beside its existing context, manifest, spec and obligations.
+`project task verify <TARGET> --budget small|medium|large` consumes that existing
+directory without creating or regenerating missing/stale contracts. Creation-only
+`--mode` and `--skill` are rejected for verification, even an explicit default mode.
+Bootstrap, direct context, legacy SYNC, project validation and SYNC finalization
+keep their existing behavior. There is no task finalization or lifecycle reset command.
+
+#### Dirty task-start baseline
+
+Tasks may start with dirty tracked files and unrelated untracked owner work.
+Therefore `git diff base_commit` alone is **not** a task delta. Before generating
+context/artifacts, task creation collects Git-visible paths differing from HEAD
+(effective tracked modifications, staged additions/modifications/deletions and
+Git-reported untracked files), with renames represented as delete + add. Each path
+binds its effective filesystem state, not index contents. Baseline entries are
+sorted/unique canonical POSIX repository-relative paths:
+
+```json
+{"path": "docs/example.md", "state": "file", "sha256": "<64 lowercase hex>", "bytes": 123}
+```
+
+An absent path instead has `state: "absent"`, `sha256: null`, `bytes: null`.
+The strict packaged `task-baseline.schema.json` has exactly `schema_version: 1`,
+`profile: "project-system-task-baseline-v1"`, `base_commit`, `entries`,
+`task_spec_sha256` and `task_obligations_sha256`. The last two bind **actual persisted
+bytes after writing** spec/obligations. No clock, user/host, randomness or absolute
+path participates. Input file hashing streams bounded chunks. Git executes fixed
+arguments with `shell=False`, a 30-second timeout and bounded output capture.
+Git must identify this project as the repository root. Unsafe, non-UTF-8,
+symlink/reparse paths and non-regular inputs fail closed.
+
+`.git/**` and `.generated/**` are excluded. Arbitrary ignored build trees are not
+enumerated; ignored files outside Git's reported set are outside this contract.
+Already tracked ignored files remain Git-visible. Both HEAD-to-worktree and
+HEAD-to-index path inventories are included, so staged changes cannot disappear
+when filesystem bytes have returned to HEAD. This binds filesystem bytes/size,
+not index contents or a generic full-filesystem/file-mode immutability policy.
+Changes in Git-visible inventory membership still follow the delta-map rule below.
+
+Identical task generation in the same TARGET + budget directory is idempotent.
+A different baseline, spec or obligations for that directory is rejected rather
+than silently blessing edits as a new start. Failed creation may leave disposable
+context/manifest or partially created spec/obligations, but cannot reset an existing
+baseline or its bound contracts. Deliberate lifecycle reset is not designed here.
+
+#### Binding, freshness and scope
+
+Trusted bounded loaders reject malformed/duplicate-key/non-finite/invalid-UTF-8/
+oversized JSON, unknown fields and inconsistent state/path/hash combinations.
+Verification binds exact spec/obligations/baseline bytes; the obligations spec hash
+and both baseline artifact hashes must agree. Project ID, selected target,
+`task_verify` checkpoint and current HEAD must agree with the persisted task base.
+There is no automatic rebasing/rebinding when HEAD moves.
+
+Task definition freshness rebuilds Stage 12B obligations **in memory** from the
+persisted validated spec and current canonical layer, using the existing builder
+and serializer. Exact byte equality is required. Target bytes, explicit feature
+requirement selection, selected requirement criteria/status/priority and relevant
+risk bytes/status/severity/mitigation/affects drift invalidate the contract.
+Unselected/unrelated valid sources do not become inferred obligations. The exact
+Skills registry bytes and every selected safe Skill path/byte digest must still
+match the spec; a Skill name alone never establishes authority.
+
+Current Git-visible state uses the same representation as baseline. Task delta is
+the sorted union of keys where baseline and current entries differ. Unchanged
+pre-existing dirty/untracked owner files are not task changes; further edits,
+reversions and disappearance are changes. Renames expose both old/new paths.
+Every delta path must fit `task_spec.write_scope.effective`, using existing Skills
+exact/tree (`/**`) containment. Canonical scope is only the ceiling, not executor
+authority. No prefix-neighbor escapes or automatic scope expansion are permitted.
+An empty effective scope permits only zero changes. Derived output stays excluded.
+
+#### Common validation and reports
+
+Only after binding/freshness/scope pass does verification call the existing pipeline:
+
+```python
+validate_report(root, rule_checkpoint="task_verify",
+                rule_base_commit=spec["base_commit"],
+                rule_evaluation_paths=tuple(task_changed_paths))
+```
+
+The evaluation paths are the **actual task delta**, never all project files,
+the full write ceiling or all pre-existing dirty files. Common complete-evaluation,
+governed exception and severity semantics remain authoritative. Common Rule FAIL
+follows its enforcement severity; checker ERROR remains ERROR. BLOCKING/ERROR
+validation fails verification. No new risk thresholds or task checker engine exist.
+Returned Rule Evidence v1 is serialized by `rule_evidence_to_dict()` and retains
+its existing fingerprint. No active Rules permits `rule_evidence: null`.
+
+Verification also rechecks bound inputs, HEAD and task state after common validation;
+project-code side effects cannot seal a changed snapshot as the verified state.
+This is **not an OS sandbox**, atomic filesystem snapshot or protection against
+a concurrent hostile process. Report hashes are integrity bindings, not signatures
+or human approval; coordinated rewriting/re-hashing is not authentication.
+
+`task-verification.json` uses the strict packaged
+`project-system-task-verification-v1` profile. It binds spec/obligations/baseline
+SHA-256, base/current HEAD, target/checkpoint, sorted delta/effective scope/outside
+scope, exact current `task_state` entries for delta paths, validation issues/counts,
+common Rule Evidence, obligation/risk counts and deterministic result. For a reverted
+dirty path no longer in the dirty inventory, `task_state` still snapshots its actual
+current bytes; a deleted untracked file is represented as absent.
+
+`working_tree_fingerprint` is common canonical semantic SHA-256 of base commit,
+the three artifact hashes, effective scope, delta paths and current delta entries.
+Equivalent relocated state produces the same fingerprint. Report integrity is
+canonical SHA-256 of the report excluding `verification_integrity`; this does not
+replace or fork the nested common Rule Evidence fingerprint. Strict report loading
+checks schema, scope/result/count relationships, lifecycle identities, fingerprints
+and the common Evidence projection. JSON uses UTF-8, sorted keys, indent 2,
+`allow_nan=False` and one terminal LF. New lifecycle/report writes are atomic and
+guarded for parent containment/symlink/reparse paths, only under `.generated/**`.
+
+`task-verification.md` is a human projection, not trusted lifecycle input. Bound
+scope failures persist `SCOPE_FAIL` without running Rules; validation failures
+persist `VALIDATION_FAIL`. Successful verification persists `PASS`. Untrusted/
+missing/stale input failures do not create a new trusted report (any previous
+derived report is historical, not automatically fresh). If the common pipeline
+raises before returning a trustworthy validation report, verification fails closed
+with a controlled infrastructure/validation error, without inventing Rule FAIL,
+Rule Evidence or a fresh report; the common engine itself remains unchanged.
+Controlled verify exits:
+`3` integrity/staleness, `4` scope, `5` validation; CLI syntax errors remain `2`.
+
+**Always:** `deterministic_verification: true`,
+`semantic_acceptance_verified: false`, `task_completion_claimed: false`.
+Acceptance obligations and risks are counts/bound context only. No natural-language
+criterion PASS/FAIL, criterion-to-test/Rule mapping, AI attestation, risk outcome,
+human approval record or canonical task/completion object is created. PASS means
+only that this deterministic contract passed, **not** semantic acceptance,
+approval, completion, merge or shipping. No staging, commit, push, PR, finalization
+or canonical mutation occurs. **Stage 13 remains the end-to-end completion gate.**
+
+Stage 12 closure remains subject to independent owner/main-chat acceptance. This
+candidate does not self-approve Stage 12C or declare Stage 12 complete.
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.

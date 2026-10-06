@@ -86,6 +86,10 @@ def document(prepared):
 
 def _generate(project, target='feature', **kwargs):
     root, objects, _ = project
+    # Independent builder fixtures, not an implicit production lifecycle reset.
+    output = root / '.generated/context' / f'TASK-{objects[target][1]}-{kwargs.get("budget", "small")}'
+    if output.exists():
+        shutil.rmtree(output)
     output, manifest = task(root, objects[target][1], budget=kwargs.get('budget', 'small'))
     return output, load_task_obligations(output / 'task-obligations.json'), manifest
 

@@ -65,6 +65,11 @@ def document(prepared):
 
 
 def _bytes(root, target, **kwargs):
+    # These Stage 12A tests compare independently prepared contracts. Stage 12C
+    # deliberately forbids resetting an existing lifecycle in production.
+    output = root / '.generated/context' / f'TASK-{target}-{kwargs.get("budget", "medium")}'
+    if output.exists():
+        shutil.rmtree(output)
     output, manifest = task(root, target, **kwargs)
     return (output / 'task-spec.json').read_bytes(), manifest
 

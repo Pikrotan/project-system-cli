@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile", "task_spec_sha256", "task_obligations_sha256", "base_commit", "entries"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "profile": {"const": "project-system-task-baseline-v1"},
+    "task_spec_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "task_obligations_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "base_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "entries": {"type": "array", "items": {"$ref": "#/$defs/entry"}}
+  },
+  "$defs": {
+    "entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "state", "sha256", "bytes"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "state": {"enum": ["file", "absent"]},
+        "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": ["integer", "null"], "minimum": 0}
+      },
+      "allOf": [{
+        "if": {"properties": {"state": {"const": "file"}}},
+        "then": {"properties": {"sha256": {"type": "string"}, "bytes": {"type": "integer"}}},
+        "else": {"properties": {"sha256": {"type": "null"}, "bytes": {"type": "null"}}}
+      }]
+    }
+  }
+}

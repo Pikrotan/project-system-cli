@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "profile", "task_spec_sha256", "task_obligations_sha256", "task_baseline_sha256", "base_commit", "current_head", "target_id", "verification_checkpoint", "task_changed_paths", "effective_write_scope", "changes_outside_scope", "task_state", "working_tree_fingerprint", "validation", "rule_evidence", "obligation_count", "risk_count", "deterministic_verification", "semantic_acceptance_verified", "task_completion_claimed", "verification_result", "verification_integrity"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "profile": {"const": "project-system-task-verification-v1"},
+    "task_spec_sha256": {"$ref": "#/$defs/hash"},
+    "task_obligations_sha256": {"$ref": "#/$defs/hash"},
+    "task_baseline_sha256": {"$ref": "#/$defs/hash"},
+    "base_commit": {"$ref": "#/$defs/commit"},
+    "current_head": {"$ref": "#/$defs/commit"},
+    "target_id": {"type": "string", "pattern": "^(DEC|REQ|FEAT|Q|RISK|EXP|SCR|FLOW|ENT|MET|DES|DEBT)-[0-9]{8}-[0-9a-f]{8}$"},
+    "verification_checkpoint": {"const": "task_verify"},
+    "task_changed_paths": {"$ref": "#/$defs/paths"},
+    "effective_write_scope": {"$ref": "#/$defs/paths"},
+    "changes_outside_scope": {"$ref": "#/$defs/paths"},
+    "task_state": {"type": "array", "items": {"$ref": "#/$defs/entry"}},
+    "working_tree_fingerprint": {"$ref": "#/$defs/hash"},
+    "validation": {
+      "type": "object", "additionalProperties": false, "required": ["issues", "counts"],
+      "properties": {
+        "issues": {"type": "array", "items": {
+          "type": "array", "minItems": 3, "maxItems": 3,
+          "prefixItems": [{"enum": ["BLOCKING", "ERROR", "WARNING", "INFO"]}, {"type": "string"}, {"type": "string"}], "items": false
+        }},
+        "counts": {"type": "object", "additionalProperties": false,
+          "required": ["BLOCKING", "ERROR", "WARNING", "INFO"],
+          "properties": {"BLOCKING": {"$ref": "#/$defs/count"}, "ERROR": {"$ref": "#/$defs/count"}, "WARNING": {"$ref": "#/$defs/count"}, "INFO": {"$ref": "#/$defs/count"}}}
+      }
+    },
+    "rule_evidence": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/commonEvidenceV1"}]},
+    "obligation_count": {"$ref": "#/$defs/count"},
+    "risk_count": {"$ref": "#/$defs/count"},
+    "deterministic_verification": {"type": "boolean", "const": true},
+    "semantic_acceptance_verified": {"type": "boolean", "const": false},
+    "task_completion_claimed": {"type": "boolean", "const": false},
+    "verification_result": {"enum": ["PASS", "SCOPE_FAIL", "VALIDATION_FAIL"]},
+    "verification_integrity": {"$ref": "#/$defs/hash"}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "paths": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "count": {"type": "integer", "minimum": 0},
+    "nullableString": {"type": ["string", "null"]},
+    "entry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "state", "sha256", "bytes"],
+      "properties": {"path": {"type": "string", "minLength": 1}, "state": {"enum": ["file", "absent"]},
+        "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}, "bytes": {"type": ["integer", "null"], "minimum": 0}},
+      "allOf": [{"if": {"properties": {"state": {"const": "file"}}},
+        "then": {"properties": {"sha256": {"type": "string"}, "bytes": {"type": "integer"}}},
+        "else": {"properties": {"sha256": {"type": "null"}, "bytes": {"type": "null"}}}}]
+    },
+    "commonEvidenceV1": {
+      "$comment": "Persisted JSON projection of existing rule_evidence.RuleEvidence, not a new Evidence model.",
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "project_id", "git_head", "base_commit", "cli_version", "checkpoint", "rules_registry_sha256", "exception_registry_sha256", "evaluation_context_sha256", "results", "applied_exception_ids", "evidence_fingerprint"],
+      "properties": {
+        "schema_version": {"type": "integer", "const": 1},
+        "project_id": {"type": "string", "minLength": 1}, "git_head": {"$ref": "#/$defs/commit"},
+        "base_commit": {"$ref": "#/$defs/commit"}, "cli_version": {"type": "string", "minLength": 1},
+        "checkpoint": {"const": "task_verify"},
+        "rules_registry_sha256": {"$ref": "#/$defs/hash"}, "exception_registry_sha256": {"$ref": "#/$defs/hash"},
+        "evaluation_context_sha256": {"$ref": "#/$defs/hash"}, "evidence_fingerprint": {"$ref": "#/$defs/hash"},
+        "applied_exception_ids": {"$ref": "#/$defs/paths"},
+        "results": {"type": "array", "items": {
+          "type": "object", "additionalProperties": false,
+          "required": ["rule_id", "rule_sha256", "verification_method", "checker", "checker_version", "severity", "resolved_scope", "raw_status", "effective_status", "details", "artifacts", "exception_id", "failure_reason"],
+          "properties": {
+            "rule_id": {"type": "string", "minLength": 1}, "rule_sha256": {"$ref": "#/$defs/hash"},
+            "verification_method": {"enum": ["deterministic", "ai", "human"]},
+            "checker": {"$ref": "#/$defs/nullableString"}, "checker_version": {"$ref": "#/$defs/nullableString"},
+            "severity": {"enum": ["BLOCKING", "ERROR", "WARNING", "INFO"]},
+            "resolved_scope": {"$ref": "#/$defs/paths"},
+            "raw_status": {"enum": ["PASS", "FAIL", "ERROR", "NOT_APPLICABLE", "PENDING"]},
+            "effective_status": {"enum": ["PASS", "FAIL", "ERROR", "NOT_APPLICABLE", "PENDING", "WAIVED"]},
+            "details": {"type": "object"}, "artifacts": {"type": "array"},
+            "exception_id": {"$ref": "#/$defs/nullableString"}, "failure_reason": {"$ref": "#/$defs/nullableString"}
+          }
+        }}
+      }
+    }
+  }
+}

@@ -13,6 +13,7 @@ from .health import health
 from .modules import catalog, enable, disable
 from .tasking import task, bootstrap, prepare_pr
 from .task_specification import TaskSpecificationError
+from .task_obligations import TaskObligationsError
 from .sync_planning import plan_sync, SyncPlanError
 from .sync_verification import verify_sync, SyncVerifyError
 from .sync_finalization import finalize_sync, SyncFinalizeError
@@ -140,7 +141,7 @@ def main(argv=None):
         notes=disable(root,args.module); print('Disabled',args.module); [print(x) for x in notes]
     elif args.cmd=='task':
         try: out,_=task(root,args.target,args.mode,args.budget,False,args.skill); print(out)
-        except (SkillError,TaskSpecificationError) as exc: print(f'task failed: {exc}',file=sys.stderr); sys.exit(2)
+        except (SkillError,TaskSpecificationError,TaskObligationsError) as exc: print(f'task failed: {exc}',file=sys.stderr); sys.exit(2)
     elif args.cmd=='google':
         action=args.workspace_command
         try:

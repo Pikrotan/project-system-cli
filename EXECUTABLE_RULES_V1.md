@@ -1745,6 +1745,68 @@ their Evidence, compare implementation changes, or complete/finalize tasks.
 **Stage 12 is NOT closed: 12B and 12C remain.** This foundation is not
 self-approved Stage 12A acceptance and makes no Stage 13 claim.
 
+### Stage 12B: Requirements, Risks, and Task Obligations
+
+`project task <target>` additionally writes `task-obligations.json` beside
+`context.md`, `manifest.json`, and the unchanged Task Specification v1 artifact.
+This is derived execution data, never a second canonical source of truth.
+Bootstrap, direct context, and legacy `task(..., sync=True)` retain their existing
+behavior and gain neither this artifact nor its creation preconditions.
+
+Requirements are selected only from canonical structured metadata: a requirement
+target includes itself; a feature includes exactly its declared `requirements`
+references; all other targets select none. References must exist, be requirements,
+and be unique. There is no prose, naming, domain, graph-proximity, AI, or recursive
+`depends_on` inference. Selected sources are schema-valid, safely contained objects
+whose internal identity agrees with the canonical filename/type/directory.
+
+Each source binds its exact canonical file bytes with SHA-256. Requirement records
+contain ID, relative path, digest, lifecycle status, nullable priority, and exact
+ordered acceptance criteria (missing means an empty list). Only **active** criteria
+produce obligations: `<REQ-ID>#acceptance-<four-digit one-based index>` with exact
+text, source ID, index, and `acceptance_criterion` kind. Repeated text at distinct
+indices remains distinct. Non-active sources remain bound but create no obligations.
+The four-digit locator supports at most 9,999 ACTIVE criteria per requirement.
+The shared builder/validator/loader generation boundary checks every active source
+before expanding any obligation records; overflow fails closed without truncation
+or changing the profile. Non-active criteria create no locators and remain governed
+by the artifact byte limit, not the active locator limit.
+
+Risks are selected only when structured `affects` intersects the target ID or a
+selected requirement ID, or when the target itself is that risk. All risk lifecycle
+states remain included. Each record binds status, nullable severity/mitigation,
+and a sorted unique identity set of `affects`; duplicate source mentions are set
+membership, not new obligations, and canonical data is not rewritten. Missing
+optional severity or mitigation is null, not an invented default. Risk mitigation
+is not an automatic obligation; no severity threshold, PASS/FAIL, or risk enforcement
+policy is introduced. An unreadable risk inventory or malformed structured `affects`
+fails closed because deterministic relevance cannot be established.
+
+The builder validates the persisted `task-spec.json` through the Stage 12A trusted
+loader and binds SHA-256 of its **actual persisted bytes**, not reserialized JSON.
+Target ID/type/path/hash contradictions against the current canonical source fail
+closed; the spec is never silently regenerated to hide drift. This is creation-time
+binding, not an atomic multi-file filesystem snapshot or a later freshness lifecycle.
+
+The packaged strict `task-obligations.schema.json` rejects unknown fields. Its exact
+top-level fields are `schema_version` (1), `profile`
+(`project-system-task-obligations-v1`), `task_spec_sha256`, `requirements`, `risks`,
+and `obligations`. The bounded UTF-8 loader rejects duplicate JSON keys and non-finite
+values. Semantic validation enforces source identity/path consistency, sorted unique
+inventories and affects, exact obligation IDs/indices/text, and complete one-to-one
+coverage of active criteria without orphan, duplicate, missing, or inactive obligations.
+
+Serialization uses sorted keys, indent 2, `allow_nan=False`, and exactly one terminal
+LF. Identical selected source bytes and spec bytes produce identical artifact bytes
+across context budgets and checkout locations. No timestamp, generated path, budget,
+context hash, environment identity, random ID, or self-hash is included. Changes to
+unselected/unrelated valid sources alone do not change this artifact.
+
+**Stage 12 is NOT closed. 12C remains.** Stage 12B does not execute `task_verify`,
+Rules or completion Evidence, compare implementation diffs with task write scopes,
+map criteria to tests/checkers, assign outcomes, finalize tasks, or grant human
+approval. This implementation candidate is not self-approved Stage 12B acceptance.
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.

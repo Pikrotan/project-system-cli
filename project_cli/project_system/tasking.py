@@ -9,6 +9,7 @@ from .task_specification import (
     build_task_specification, normalize_task_mode, snapshot_task_target,
     task_git_head, task_project_id, write_task_specification,
 )
+from .task_obligations import build_task_obligations, write_task_obligations
 
 def task(root,target,mode='implement',budget='medium',sync=False,skills=None):
     config=load_yaml(Path(root)/'project.yaml')
@@ -33,6 +34,7 @@ def task(root,target,mode='implement',budget='medium',sync=False,skills=None):
     output,manifest=build_context(root,target,budget,mode,allowed_write_set=list(dict.fromkeys(allowed)),kind=kind,skill_names=list(dict.fromkeys(selected)))
     if not sync:
         write_task_specification(output,build_task_specification(config,head,target_binding,mode,manifest))
+        write_task_obligations(output,build_task_obligations(root,Path(output)/'task-spec.json',target))
     return output,manifest
 
 def bootstrap(root,budget='medium',skills=None):

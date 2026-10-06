@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task Obligations v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile", "task_spec_sha256", "requirements", "risks", "obligations"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "profile": {"const": "project-system-task-obligations-v1"},
+    "task_spec_sha256": {"$ref": "#/$defs/hash"},
+    "requirements": {"type": "array", "items": {"$ref": "#/$defs/requirement"}},
+    "risks": {"type": "array", "items": {"$ref": "#/$defs/risk"}},
+    "obligations": {"type": "array", "items": {"$ref": "#/$defs/obligation"}}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "level": {"enum": [null, "low", "medium", "high", "critical"]},
+    "requirement": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "path", "sha256", "status", "priority", "acceptance_criteria"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^REQ-[0-9]{8}-[0-9a-f]{8}$"},
+        "path": {"type": "string"}, "sha256": {"$ref": "#/$defs/hash"},
+        "status": {"enum": ["draft", "proposed", "active", "deprecated", "rejected"]},
+        "priority": {"$ref": "#/$defs/level"},
+        "acceptance_criteria": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "risk": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "path", "sha256", "status", "severity", "mitigation", "affects"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^RISK-[0-9]{8}-[0-9a-f]{8}$"},
+        "path": {"type": "string"}, "sha256": {"$ref": "#/$defs/hash"},
+        "status": {"enum": ["open", "mitigated", "accepted", "closed"]},
+        "severity": {"$ref": "#/$defs/level"},
+        "mitigation": {"type": ["string", "null"]},
+        "affects": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+      }
+    },
+    "obligation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "source_id", "criterion_index", "text"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^REQ-[0-9]{8}-[0-9a-f]{8}#acceptance-[0-9]{4}$"},
+        "kind": {"const": "acceptance_criterion"},
+        "source_id": {"type": "string", "pattern": "^REQ-[0-9]{8}-[0-9a-f]{8}$"},
+        "criterion_index": {"type": "integer", "minimum": 1, "maximum": 9999},
+        "text": {"type": "string"}
+      }
+    }
+  }
+}

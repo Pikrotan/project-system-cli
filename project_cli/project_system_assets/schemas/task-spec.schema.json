@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task Specification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile", "project_id", "base_commit", "target", "mode", "verification_checkpoint", "write_scope", "skills"],
+  "properties": {
+    "schema_version": {"const": 1, "type": "integer"},
+    "profile": {"const": "project-system-task-spec-v1"},
+    "project_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+    "base_commit": {"$ref": "#/$defs/commit"},
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "type", "path", "sha256"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^(?:DEC|REQ|FEAT|Q|RISK|EXP|SCR|FLOW|ENT|MET|DES|DEBT)-[0-9]{8}-[0-9a-f]{8}$"},
+        "type": {"enum": ["decision", "requirement", "feature", "question", "risk", "experiment", "screen", "flow", "entity", "metric", "design_change", "debt"]},
+        "path": {"$ref": "#/$defs/path"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "mode": {"type": "string", "minLength": 1, "pattern": "^\\S(?:[\\s\\S]*\\S)?$"},
+    "verification_checkpoint": {"const": "task_verify"},
+    "write_scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["canonical", "effective"],
+      "properties": {
+        "canonical": {"$ref": "#/$defs/scope"},
+        "effective": {"$ref": "#/$defs/scope"}
+      }
+    },
+    "skills": {
+      "type": "object", "additionalProperties": false,
+      "required": ["registry_sha256", "selected"],
+      "properties": {
+        "registry_sha256": {"$ref": "#/$defs/sha256"},
+        "selected": {
+          "type": "array", "uniqueItems": true,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["name", "path", "sha256"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"},
+              "path": {"type": "string", "pattern": "^\\.agents/skills/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?/SKILL\\.md$"},
+              "sha256": {"$ref": "#/$defs/sha256"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*[\\\\:\\u0000])[^\\r\\n]+$"},
+    "scope": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/path"}}
+  }
+}

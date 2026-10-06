@@ -1672,6 +1672,79 @@ sampling, cache or nightly quality policy is added.
 **Next: Stage 12 — Task Specification, Risk, and Task Obligations.** Stage 12 is
 not implemented here.
 
+### Stage 12A: Task Specification v1 foundation
+
+`project task <target>` retains its CLI grammar, printed context directory and
+`(output, manifest)` return contract. In addition to `context.md` and
+`manifest.json`, it writes `task-spec.json` in that existing generated directory.
+This is a **derived execution contract**, never a canonical Task object or
+another source of project truth. The strict packaged `task-spec.schema.json`
+rejects missing/unknown fields and malformed nested structure. A narrow loader
+also rejects duplicate JSON keys, oversized input, unsafe paths and inconsistent
+identity bindings.
+
+The exact fields are:
+
+- `schema_version`: `1`;
+- `profile`: `project-system-task-spec-v1`;
+- `project_id`: the exact canonical `project.yaml` `project.id`;
+- `base_commit`: current Git HEAD, exactly 40 lowercase hex characters;
+- `target`: `{id, type, path, sha256}`, from the canonical object record selected
+  by internal ID, with a repository-relative POSIX path (including any slug) and
+  SHA-256 of exact current file bytes;
+- `mode`: the requested mode after strict non-empty whitespace trimming, with
+  no new mode taxonomy;
+- `verification_checkpoint`: `task_verify` (a binding, not an evaluation);
+- `write_scope`: `{canonical, effective}`, copied from the already-computed task
+  manifest, sorted and deduplicated; only canonical repository-relative paths or
+  anchored patterns, with no traversal, absolute paths, `.git` authority or
+  generated-context output authority;
+- `skills`: `{registry_sha256, selected}`, reusing existing manifest evidence;
+  selected entries `{name, path, sha256}` are sorted by name and bind
+  `.agents/skills/<name>/SKILL.md` without copying Skill contents.
+
+Canonical write scope is the task authority ceiling; effective scope is a
+capability-reduced subset and may never widen that ceiling. Every effective
+pattern must be fully contained by at least one canonical pattern, using the
+existing Skills write-scope grammar and containment implementation: exact
+repository-relative paths or normalized tree patterns ending in `/**`, not
+Rule-style `*`, `?` or character-class globs. Exact authority contains only the
+same exact path; a tree contains its base and paths/subtrees below that base at
+a `/` boundary. Empty effective scope is valid. This relationship is validated
+intrinsically for persisted specs, including builder/loader paths; selected
+Skill names alone do not establish or expand authority.
+
+Git identity uses a bounded `shell=False` invocation of
+`git rev-parse --verify HEAD^{commit}` with a 30-second timeout and bounded
+capture. Missing Git, nonzero exit, malformed/ambiguous HEAD, an invalid target
+record, unsafe target path or unavailable valid Skill evidence fails closed:
+no placeholder commit, registry digest or invented identity. Task preparation
+therefore requires an established Git HEAD and Skills evidence; direct context
+generation, existing bootstrap and legacy `project sync <OBJECT-ID>` retain
+their previous behavior and do not acquire this new task-spec precondition.
+
+Serialization is UTF-8 JSON with stable sorted keys, two-space indentation and
+exactly one terminal LF. There is no self-hash (`task_spec_sha256`). Git base,
+target identity/type/path/bytes, mode, canonical/effective scopes and selected
+Skill/registry evidence affect these bytes. Context budget alone does not.
+There are no absolute checkout/output paths, context content/hash, manifest
+path, timestamps, PID, hostname, username or random run identity in the spec.
+Equivalent semantic inputs in another checkout yield identical bytes.
+
+A dirty tree is allowed: Git base and exact current target bytes are separate
+bindings. This is **not** a full working-tree snapshot, atomic filesystem
+snapshot, freshness/invalidation proof, implementation verification or approval.
+Sequential reads and context generation retain their existing limits; a failed
+task-spec write may leave disposable context/manifest output. Project code is
+not executed by this foundation; no sandbox or new trust/approval mechanism is
+introduced.
+
+Stage 12A does not aggregate acceptance criteria, calculate/resolve risks or
+mitigations, generate task obligations, evaluate `task_verify` Rules or produce
+their Evidence, compare implementation changes, or complete/finalize tasks.
+**Stage 12 is NOT closed: 12B and 12C remain.** This foundation is not
+self-approved Stage 12A acceptance and makes no Stage 13 claim.
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.

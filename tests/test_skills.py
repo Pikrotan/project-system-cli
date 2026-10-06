@@ -411,6 +411,7 @@ def test_bootstrap_keeps_knowledge_bootstrap_semantics_and_selects_skill(tmp_pat
 def test_default_project_screen_task_does_not_require_conditional_design_skill(tmp_path):
     root = init_project('Demo', tmp_path / 'demo')
     _, object_id = create_object(root, 'screen', 'Home', 'design', 'owner')
+    _commit(root)
     _, manifest = task(root, object_id, mode='review', budget='small')
     assert [item['name'] for item in manifest['selected_skills']] == ['knowledge-sync']
 

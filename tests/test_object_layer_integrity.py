@@ -13,6 +13,7 @@ from project_system.objects import create_object
 from project_system.tasking import task
 from project_system.validation import validate
 import project_system.ids as ids
+from test_sync_finalize import _commit_project
 
 
 def _fatal(issues):
@@ -84,6 +85,7 @@ def test_id_slug_filename_is_valid_and_transparent_to_consumers(tmp_path):
     path, object_id = create_object(root, 'feature', 'Search', 'product', 'owner')
     path = _with_slug(path)
 
+    _commit_project(root)
     layer = load_object_layer(root)
     graph, _, _ = build_graph(root)
     _, context_manifest = build_context(root, object_id, 'small')
@@ -172,6 +174,8 @@ def test_generation_uses_loaded_markdown_objects(tmp_path):
 def test_task_and_sync_target_loaded_markdown_object(tmp_path, sync):
     root = init_project('Demo', tmp_path / 'demo')
     object_path, object_id = create_object(root, 'feature', 'Search', 'product', 'owner')
+    if not sync:
+        _commit_project(root)
 
     _, manifest = task(root, object_id, 'sync' if sync else 'implement', 'small', sync)
 

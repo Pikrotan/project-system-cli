@@ -5,22 +5,35 @@ from .git_helpers import changed_files
 from .object_loader import load_object_layer
 from .skills import default_skill_names_for_target, skills_enabled
 from .utils import load_yaml
+from .task_specification import (
+    build_task_specification, normalize_task_mode, snapshot_task_target,
+    task_git_head, task_project_id, write_task_specification,
+)
 
 def task(root,target,mode='implement',budget='medium',sync=False,skills=None):
+    config=load_yaml(Path(root)/'project.yaml')
+    if not sync:
+        mode=normalize_task_mode(mode)
+        task_project_id(config)
+        head=task_git_head(root)
+    layer=load_object_layer(root)
+    target_binding=snapshot_task_target(root,layer,target) if not sync else None
     imp=impact(root,target)
     allowed=[str(Path('knowledge')/Path(target))] if False else []
     # canonical object file + deterministic impact docs; executor may request scope expansion rather than editing outside this set
-    objs=load_object_layer(root).objects
+    objs=layer.objects
     if target in objs: allowed.append(objs[target]['path'].relative_to(root).as_posix())
     allowed += [x for x in imp['check_docs'] if (Path(root)/x).exists()]
     kind='sync' if sync else 'task'
     selected=list(skills or [])
-    config=load_yaml(Path(root)/'project.yaml')
     if skills_enabled(config):
         selected += default_skill_names_for_target(
             objs[target]['data'],mode=mode,sync=sync,config=config,
         )
-    return build_context(root,target,budget,mode,allowed_write_set=list(dict.fromkeys(allowed)),kind=kind,skill_names=list(dict.fromkeys(selected)))
+    output,manifest=build_context(root,target,budget,mode,allowed_write_set=list(dict.fromkeys(allowed)),kind=kind,skill_names=list(dict.fromkeys(selected)))
+    if not sync:
+        write_task_specification(output,build_task_specification(config,head,target_binding,mode,manifest))
+    return output,manifest
 
 def bootstrap(root,budget='medium',skills=None):
     selected=list(skills or [])

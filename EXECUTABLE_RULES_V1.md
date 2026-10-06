@@ -1587,6 +1587,91 @@ thresholds, Flutter mutation, generator or upstream changes are introduced.
 **Stage 11 is NOT closed. 11C remains.** Stage 11B does not self-approve
 acceptance, commit readiness or final regression-strength closure.
 
+### Stage 11C: Regression-quality composition and closure
+
+The regression-quality stack composes four independent active deterministic
+Rules using the existing `code.verification` checker at `project_validate` and
+`sync_verify`:
+
+```text
+dart.format@1
+  -> dart.analyze.strict@1
+  -> dart.test@1
+  -> dart.mutation.strict@2
+```
+
+This is a capability map, not a dependency graph or a mega-check. Formatting
+evidences canonical source formatting; strict analysis evidences static-quality
+validity; direct tests evidence independently normalized regression-suite
+inventory/outcomes; mutation evidences test sensitivity for the adapter's
+eligible mutation domain. Skills orchestrate; Rules enforce. The adapter
+implementations remain separate, with no new inter-adapter dependency.
+
+Direct `dart.test` PASS does **not** imply mutation PASS: green tests may coexist
+with Survived/NoCoverage mutation FAIL. Conversely, mutation PASS does not replace
+the independently identified `dart.test` Rule Evidence. The mutation adapter's
+own green compact baseline is an internal trust precondition, not evidence for
+the separate direct-test Rule. A red direct suite is test FAIL; a red mutation
+internal baseline is mutation ERROR, never a mutation-quality FAIL. Neither
+claim is inferred from the other Rule.
+
+Each Rule preserves its identity, adapter/version, semantic/result hashes,
+findings and status. Stable Rule-ID evaluation and canonical registry hashing
+make registry insertion order irrelevant. Failures do not short-circuit other
+Rules. Raw stdout/stderr, report ordering, replay transcripts, disposable
+workspace names and non-semantic reporter timing are not semantic Rule Evidence.
+Isolated format, strict-analysis, direct-test inventory/outcome or mutation
+outcome changes affect only the corresponding Rule's result Evidence; the
+combined Evidence fingerprint consequently changes. Cross-Rule result/hash
+substitution and cross-adapter identity/version substitution are rejected at
+the existing generic trust boundaries.
+
+Evidence remains **Rule Evidence v1**. No Rule, Evidence or checker schema changes
+are introduced by Stage 11. Enforcement severity and exception governance remain
+generic: valid FAIL blocks for ERROR/BLOCKING severity, not WARNING/INFO;
+infrastructure ERROR always blocks, dominates quality FAIL and cannot become
+WAIVED. There is no regression-specific exception policy or combined checker.
+
+The real existing lifecycle supplies the closure gate:
+
+```text
+plan_sync -> verify_sync -> finalize_sync (fresh sync_verify recheck)
+```
+
+Verification binds all four independently identified results. Finalization
+re-executes all four Rules, even when one fails. Semantically equivalent fresh
+results preserve the exact Evidence binding and reach dry-run `prepared` without
+commit/push. Selective semantic drift in any layer rejects stale finalization,
+even with unchanged Git/files/verification fingerprint. An independent mutant
+replay contradiction or infrastructure failure produces ERROR and blocks
+finalization while leaving the other three results intact. No mutation-specific
+SYNC or new freshness mechanism is introduced.
+
+**Stage 11 — COMPLETE** is conditional on independent main-chat integrity review
+of this Stage 11C candidate. Until that review accepts it, this is a composition
+and closure candidate, not self-approved closure, release or commit readiness.
+The 11A/11B statements above describe their historical stage boundaries.
+
+Upon acceptance, COMPLETE means deterministic regression-suite Evidence and
+strict mutation-quality Evidence exist; positive mutations are independently
+reconstructed and statically/behaviorally attested; those claims compose with
+existing format/analyze gates; and fresh SYNC finalization detects semantic drift
+or integrity contradiction. It does **not** mean line/branch coverage, exhaustive
+mutation generation, Flutter mutation, solved flaky tests, fully attested tool
+binaries/environment, an OS sandbox, performance benchmarks, or SAST/secrets/
+SBOM/licenses. The 11A/11B eligible-domain and toolchain limits remain: sequential
+fresh copies are not atomic filesystem snapshots; project code/tools may have
+external effects; package relocation, installed environment, flaky tests and
+timeout transitions can still fail closed. Mocked transports qualify composition,
+not a live Dart toolchain.
+
+No coverage/mutation percentage, minimum test count, test/source ratio,
+performance threshold, retries, arbitrary commands, changed-lines-only selection,
+sampling, cache or nightly quality policy is added.
+
+**Next: Stage 12 — Task Specification, Risk, and Task Obligations.** Stage 12 is
+not implemented here.
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.

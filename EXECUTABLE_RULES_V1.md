@@ -740,7 +740,11 @@ Existing deterministic Project System invariants remain in place throughout migr
 10. Code Quality Gates
 11. Mutation and Regression Quality
 12. Task Specification, Risk Engine, and Task Obligations
-13. Bootstrap and end-to-end AI Development Gate
+13. External Source Intake & Canonicalization
+    13A. Source Capture & Provenance
+    13B. Extraction & Proposal Layer
+    13C. Human Review & Canonical Apply
+14. Bootstrap and end-to-end AI Development Gate
 ```
 
 Each stage must preserve existing behavior, add focused tests, inspect the diff, and pass the complete Project System test suite before the next stage.
@@ -1944,10 +1948,135 @@ criterion PASS/FAIL, criterion-to-test/Rule mapping, AI attestation, risk outcom
 human approval record or canonical task/completion object is created. PASS means
 only that this deterministic contract passed, **not** semantic acceptance,
 approval, completion, merge or shipping. No staging, commit, push, PR, finalization
-or canonical mutation occurs. **Stage 13 remains the end-to-end completion gate.**
+or canonical mutation occurs. **Stage 14 remains the end-to-end completion gate.**
 
 Stage 12 closure remains subject to independent owner/main-chat acceptance. This
 candidate does not self-approve Stage 12C or declare Stage 12 complete.
+
+### Stage 13A: Source Capture & Provenance
+
+Stage 12 is independently accepted and published. The roadmap now assigns
+External Source Intake & Canonicalization to Stage 13 and moves the former
+bootstrap/end-to-end gate to Stage 14. This implementation is a Stage 13A
+candidate; Stage 13 remains open for 13B Extraction & Proposal Layer and 13C
+Human Review & Canonical Apply. It does not self-approve acceptance or closure.
+
+**External Source != Proposal != Canonical Product Truth.** Source receipts
+are durable canonical provenance facts. They neither become nor authorize
+requirements, decisions, features, risks or implementation. `knowledge/**`
+remains product truth; source material does not enter its object loader.
+
+Small immutable files provide independent identities, append-only capture
+history, individual validation/hashability, low merge contention and exact Git
+history per capture. There is no central mutable `sources.yaml` registry.
+The durable layer is neither tooling policy (`.project/**`) nor disposable
+output (`.generated/**`):
+
+```text
+sources/definitions/SRC-<32 lowercase hex>.json
+sources/captures/CAP-<32 lowercase hex>.json
+sources/snapshots/CAP-<32 lowercase hex>/payload.bin  # explicit retention only
+```
+
+Both receipt contracts use strict packaged JSON Schemas and reject unknown
+fields. Source Definition v1 has exactly:
+
+```text
+schema_version: 1
+profile: project-system-source-v1
+project_id, source_id, key, provider, kind
+```
+
+`key` is a unique project-local non-secret alias matching
+`[a-z0-9][a-z0-9._-]{0,79}`. Provider matches `[a-z][a-z0-9_-]{0,63}`.
+Kind is exactly `conversation|document|image|archive|design|other`.
+Source identity payload contains only `project_id, key, provider, kind`.
+
+Capture v1 has exactly:
+
+```text
+schema_version: 1
+profile: project-system-source-capture-v1
+project_id, capture_id, source_id, content_sha256, bytes,
+media_type, retention, snapshot
+```
+
+Capture identity payload contains only `project_id, source_id, content_sha256,
+bytes, media_type, retention`. IDs are respectively `SRC-` and `CAP-` plus the
+first 32 lowercase hexadecimal characters of SHA-256 of the identity payload.
+Identity JSON is UTF-8, sorted keys, compact separators `(',', ':')`,
+`ensure_ascii=False`, `allow_nan=False`, no terminal LF. Stored receipts are
+UTF-8, sorted keys, indent 2 and one terminal LF. Validation independently
+recomputes IDs and requires exact filename/internal-ID agreement. Semantic
+identity changes require a different ID; conflicting reuse of a Source key
+fails. New content produces another capture of the same Source. Media type or
+retention changes intentionally produce another capture identity.
+
+Media types are normalized lowercase `type/subtype` values (1..127 ASCII token
+characters per component, starting alphanumeric; remaining token characters
+are alphanumerics and `!#$&^_.+-`). MIME parameters/whitespace are not accepted.
+The CLI default is `application/octet-stream`; no MIME/content inference occurs.
+
+```bash
+project source capture PATH --key KEY --provider PROVIDER --kind document
+project source capture PATH --key KEY --provider PROVIDER --kind document --media-type application/pdf --retention repository-snapshot
+```
+
+Default `reference` writes only the Source Definition and Capture receipt:
+`snapshot` is null and validation needs no original source file. Explicit
+`repository-snapshot` maps to internal `repository_snapshot`; snapshot metadata
+is exactly `{path, sha256, bytes}`. Path is exactly
+`sources/snapshots/<capture_id>/payload.bin`; hash/size equal capture content
+hash/size. Input names and locations are never retained. Identical captures
+reuse matching existing receipts without reserializing/replacing them. There
+are no overwrite, update, delete or lifecycle-reset commands.
+
+Input PATH may be external to the project. It must be a regular file with no
+symlink/reparse traversal. Reads use 128 KiB chunks and the single named source
+limit `MAX_SOURCE_BYTES = 256 * 1024 * 1024` (256 MiB); receipts are limited to
+64 KiB. lstat/fstat identity, size, mtime and mode are checked before/open/during/
+after reading, and counted bytes must match the stable size. A changing input
+fails closed. Reference hashing does not copy raw bytes into the project.
+Snapshot capture streams the same hashed bytes into an exclusive temporary
+file, flushes/fsyncs and publishes it at the deterministic path, without a
+second read of the potentially changed input. Publication uses a same-filesystem
+atomic hard link with no replacement; filesystems without that operation fail
+closed. Existing destinations are bounded-loaded/validated and must be
+semantically equal (snapshot bytes must have the exact expected hash/size).
+Temporary files are removed on ordinary failures, and only newly published
+files still matching this invocation's inode are rolled back. No existing
+receipt is silently rewritten. This is not an OS sandbox, a multi-file atomic
+transaction or a guarantee against malicious concurrent filesystem replacement;
+an interrupted process can leave artifacts that normal validation rejects.
+
+`project validate` consumes source-layer inspection as part of its existing
+validation report, so CI/generation/task/SYNC validation sees provenance errors
+through the same pipeline. It checks bounded strict UTF-8 JSON, duplicate keys,
+non-finite values, schemas, project identity, recomputed IDs, unique IDs and
+Source keys, source references, exact snapshot metadata, safe regular snapshots
+and their streamed hash/size. Orphan payloads and unexpected layout/files fail
+with deterministically ordered ERROR issues; only empty regular `.gitkeep`
+placeholders are ignored. No source content is executed.
+
+New `project init` creates `sources/{definitions,captures,snapshots}/.gitkeep`
+and adds `sources/snapshots/**` to `.llmignore`, not `.gitignore`. Existing
+projects without a source layer remain valid without migration. Capture does
+not silently edit their ignore configuration; owners choosing snapshot storage
+in an existing project should explicitly exclude it from AI retrieval first.
+Raw snapshots may contain customer, personal, commercial, confidential or other
+sensitive material. Storage is explicit and durable; there is no encryption,
+secret scanning or automatic disclosure-prevention claim. Keys/providers/media
+types are public metadata aliases, and SHA/size receipts can reveal content
+equality. Receipts contain no input absolute path/original filename, local
+directory, username, host, timestamp, PID or random run identity. Git history
+is the repository-history boundary.
+
+13A performs no network, stdin ingestion, URL fetching, connectors, AI, OCR,
+Telegram/HTML/PDF/image parsing, proposal extraction, accept/reject workflow,
+canonical apply, product knowledge mutation, staging or commit/push. Source
+bytes are opaque. Source validity does not establish source authenticity or
+human approval. Stage 13B/13C own extraction/proposal/review/apply; Stage 14
+remains the end-to-end AI development/completion gate.
 
 ## Normative v1 field contract
 

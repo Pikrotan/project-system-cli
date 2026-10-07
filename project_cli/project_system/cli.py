@@ -16,6 +16,8 @@ from .task_specification import TaskSpecificationError
 from .task_obligations import TaskObligationsError
 from .task_baseline import TaskBaselineError
 from .task_verification import TaskVerifyError, verify_task
+from .source_capture import capture_source
+from .source_layer import KINDS, SourceError
 from .sync_planning import plan_sync, SyncPlanError
 from .sync_verification import verify_sync, SyncVerifyError
 from .sync_finalization import finalize_sync, SyncFinalizeError
@@ -54,6 +56,15 @@ def main(argv=None):
     sp=p.add_subparsers(dest='cmd',required=True)
     q=sp.add_parser('init'); q.add_argument('name'); q.add_argument('--path',default=None); q.add_argument('--type',default='other',choices=['mobile_app','web_app','desktop_app','game','saas','platform','backend_service','library','prototype','other']); q.add_argument('--governance',default='solo',choices=['solo','small_team','strict_team']); q.add_argument('--full-docs',action='store_true')
     q=sp.add_parser('new'); q.add_argument('type',choices=TYPES); q.add_argument('--title',required=True); q.add_argument('--domain',default='general'); q.add_argument('--owner',default='owner')
+    q=sp.add_parser('source',help='capture local opaque source bytes and durable provenance')
+    source_commands=q.add_subparsers(dest='source_command',required=True)
+    capture=source_commands.add_parser('capture',help='capture one regular file; reference retention by default')
+    capture.add_argument('path')
+    capture.add_argument('--key',required=True)
+    capture.add_argument('--provider',required=True)
+    capture.add_argument('--kind',choices=KINDS,required=True)
+    capture.add_argument('--media-type',default='application/octet-stream')
+    capture.add_argument('--retention',choices=['reference','repository-snapshot'],default='reference')
     q=sp.add_parser('validate'); q.add_argument('--changed',action='store_true',help='Accepted for workflow compatibility; validates the whole knowledge graph.')
     sp.add_parser('generate')
     q=sp.add_parser('context'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='review'); q.add_argument('--skill',action='append',default=[])
@@ -122,6 +133,13 @@ def main(argv=None):
     root=find_root()
     if args.cmd=='new':
         path,oid=create_object(root,args.type,args.title,args.domain,args.owner); print(f'{oid}\n{path.relative_to(root)}')
+    elif args.cmd=='source':
+        try:
+            report=capture_source(root,args.path,key=args.key,provider=args.provider,kind=args.kind,
+                                  media_type=args.media_type,retention=args.retention.replace('-','_'))
+            print(json.dumps(report,sort_keys=True))
+        except SourceError as exc:
+            print(f'source capture failed: {exc}',file=sys.stderr); sys.exit(2)
     elif args.cmd=='validate':
         issues=validate(root); print_issues(issues); print_object_counts(root); sys.exit(2 if any(x[0] in {'BLOCKING','ERROR'} for x in issues) else 0)
     elif args.cmd=='generate':

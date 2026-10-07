@@ -11,6 +11,7 @@ from .graph import extract_refs, dependency_cycles
 from .objects import DIRS
 from .object_loader import load_object_layer
 from .skills import inspect_skill_layer
+from .source_layer import inspect_source_layer
 from .rules import inspect_rules_layer, validate_rule_references
 from .process_runner import run_process
 from .rule_engine import (
@@ -190,6 +191,7 @@ def validate_report(
     cfg=load_yaml(Path(root)/'project.yaml')
     project_schema_messages=list(validate_project_schema(cfg))
     for m in project_schema_messages: issues.append(('BLOCKING','project.yaml',m))
+    issues.extend(inspect_source_layer(root,cfg).issues)
     issues.extend(inspect_skill_layer(root,cfg).issues)
     rule_layer=inspect_rules_layer(root,cfg)
     issues.extend(rule_layer.issues)

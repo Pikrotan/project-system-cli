@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Source Definition v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile", "project_id", "source_id", "key", "provider", "kind"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "profile": {"const": "project-system-source-v1"},
+    "project_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+    "source_id": {"type": "string", "pattern": "^SRC-[0-9a-f]{32}$"},
+    "key": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"},
+    "provider": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+    "kind": {"enum": ["conversation", "document", "image", "archive", "design", "other"]}
+  }
+}

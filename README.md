@@ -8,6 +8,7 @@ This distribution contains the **project system engine**: CLI, packaged machine 
 
 - `docs/` — concise living narrative documentation (up to 34 canonical narrative documents).
 - `knowledge/` — atomic lifecycle objects (decisions, requirements, features, questions, risks, experiments, screens, flows, entities, metrics, design changes, debts).
+- `sources/` — durable immutable source definitions, capture receipts and explicitly retained raw snapshots; canonical provenance facts, not product requirements or decisions.
 - `.project/policies/` — machine-readable impact, retrieval, and governance policies.
 - `.agents/skills/` — portable project-local semantic workflows registered by `.project/skills.yaml`.
 - `.generated/` — disposable indexes, graphs, reports, context packs, sync/task packs.
@@ -39,6 +40,22 @@ project skills validate
 ```
 
 ## Important boundaries
+
+Stage 13A captures local files as opaque bytes, without parsing or AI:
+
+```bash
+project source capture telegram-export.html --key client-main-chat --provider telegram --kind conversation --media-type text/html
+project source capture brief.pdf --key client-brief --provider generic --kind document --media-type application/pdf --retention repository-snapshot
+project validate
+```
+
+The default `reference` retention stores only an immutable definition and a
+SHA-256/byte-count receipt. `repository-snapshot` explicitly stores exact bytes
+under `sources/snapshots/<CAP-ID>/payload.bin`. These files may contain customer,
+personal, commercial or confidential material: there is no encryption or secret
+scanning claim. New projects exclude snapshots from AI retrieval via `.llmignore`,
+but do not Git-ignore them. Source files are limited to 256 MiB. See the Stage 13A
+contract in `EXECUTABLE_RULES_V1.md`; extraction/review/apply remain future stages.
 
 The CLI does not call an LLM, approve product decisions on its own, mirror Figma, replace GitHub, or treat generated files as canonical truth. `project sync`, `project task`, and `project bootstrap` prepare deterministic work packs for an external AI/human executor.
 

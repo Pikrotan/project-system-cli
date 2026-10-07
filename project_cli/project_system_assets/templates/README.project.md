@@ -12,3 +12,12 @@ project context project --budget small
 ```
 
 Canonical intent lives in `docs/` and active objects under `knowledge/`. Project workflows live under `.agents/skills/` and are registered by `.project/skills.yaml`; they do not replace canonical truth or human approval. `.generated/` is disposable.
+
+`sources/definitions/` and `sources/captures/` hold immutable external-source
+provenance, not product truth. `project source capture <PATH> --key KEY --provider
+PROVIDER --kind document` records a hash/size receipt by default. Only explicit
+`--retention repository-snapshot` stores raw bytes under `sources/snapshots/`.
+Snapshots may contain sensitive customer/personal/commercial data; they are
+excluded by `.llmignore` but remain Git-trackable. No encryption, secret scanning,
+content interpretation or automatic knowledge mutation is provided. `project
+validate` checks receipts and snapshot integrity.

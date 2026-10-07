@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Source Capture v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile", "project_id", "capture_id", "source_id", "content_sha256", "bytes", "media_type", "retention", "snapshot"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "profile": {"const": "project-system-source-capture-v1"},
+    "project_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+    "capture_id": {"type": "string", "pattern": "^CAP-[0-9a-f]{32}$"},
+    "source_id": {"type": "string", "pattern": "^SRC-[0-9a-f]{32}$"},
+    "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "bytes": {"type": "integer", "minimum": 0},
+    "media_type": {"type": "string", "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$"},
+    "retention": {"enum": ["reference", "repository_snapshot"]},
+    "snapshot": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "additionalProperties": false,
+         "required": ["path", "sha256", "bytes"],
+         "properties": {
+           "path": {"type": "string", "pattern": "^sources/snapshots/CAP-[0-9a-f]{32}/payload\\.bin$"},
+           "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+           "bytes": {"type": "integer", "minimum": 0}
+         }}
+      ]
+    }
+  },
+  "allOf": [{
+    "if": {"properties": {"retention": {"const": "reference"}}},
+    "then": {"properties": {"snapshot": {"type": "null"}}},
+    "else": {"properties": {"snapshot": {"type": "object"}}}
+  }]
+}

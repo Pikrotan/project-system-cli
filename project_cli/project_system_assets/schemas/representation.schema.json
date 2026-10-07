@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Source Representation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile", "project_id", "representation_id", "capture_id", "capture_content_sha256", "adapter", "segment_index", "canonical_authority"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "profile": {"const": "project-system-representation-v1"},
+    "project_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+    "representation_id": {"type": "string", "pattern": "^REP-[0-9a-f]{32}$"},
+    "capture_id": {"type": "string", "pattern": "^CAP-[0-9a-f]{32}$"},
+    "capture_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "options", "fingerprint"],
+      "properties": {
+        "id": {"const": "utf8-lines"},
+        "version": {"type": "integer", "const": 1},
+        "options": {"type": "object", "additionalProperties": false, "maxProperties": 0},
+        "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "segment_index": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "bytes", "segments"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^intake/representations/REP-[0-9a-f]{32}\\.segments\\.jsonl$"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 0, "maximum": 33554432},
+        "segments": {"type": "integer", "minimum": 0, "maximum": 100000}
+      }
+    },
+    "canonical_authority": {"const": false}
+  }
+}

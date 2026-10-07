@@ -27,6 +27,7 @@ def init_project(name,path,project_type='other',governance='solo',full_docs=Fals
         p=root/'inbox'/d; p.mkdir(parents=True,exist_ok=True); (p/'.gitkeep').write_text('',encoding='utf-8')
     for d in ['definitions','captures','snapshots']:
         p=root/'sources'/d; p.mkdir(parents=True,exist_ok=True); (p/'.gitkeep').write_text('',encoding='utf-8')
+    p=root/'intake/representations'; p.mkdir(parents=True,exist_ok=True); (p/'.gitkeep').write_text('',encoding='utf-8')
     for d in ['retrospectives','imported','external_research','migrations','legacy']:
         p=root/'history'/d; p.mkdir(parents=True,exist_ok=True); (p/'.gitkeep').write_text('',encoding='utf-8')
     (root/'.generated').mkdir(exist_ok=True); (root/'.generated/.gitkeep').write_text('',encoding='utf-8')

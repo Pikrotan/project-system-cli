@@ -742,7 +742,9 @@ Existing deterministic Project System invariants remain in place throughout migr
 12. Task Specification, Risk Engine, and Task Obligations
 13. External Source Intake & Canonicalization
     13A. Source Capture & Provenance
-    13B. Extraction & Proposal Layer
+    13B1. Source Representation & Evidence Anchors
+    13B2. Semantic Extraction & Proposal Sealing
+    13B3. Independent Semantic Audit
     13C. Human Review & Canonical Apply
 14. Bootstrap and end-to-end AI Development Gate
 ```
@@ -1957,9 +1959,8 @@ candidate does not self-approve Stage 12C or declare Stage 12 complete.
 
 Stage 12 is independently accepted and published. The roadmap now assigns
 External Source Intake & Canonicalization to Stage 13 and moves the former
-bootstrap/end-to-end gate to Stage 14. This implementation is a Stage 13A
-candidate; Stage 13 remains open for 13B Extraction & Proposal Layer and 13C
-Human Review & Canonical Apply. It does not self-approve acceptance or closure.
+bootstrap/end-to-end gate to Stage 14. Stage 13A is independently accepted and
+published. Stage 13 remains open for 13B1/13B2/13B3 and 13C.
 
 **External Source != Proposal != Canonical Product Truth.** Source receipts
 are durable canonical provenance facts. They neither become nor authorize
@@ -2075,8 +2076,102 @@ is the repository-history boundary.
 Telegram/HTML/PDF/image parsing, proposal extraction, accept/reject workflow,
 canonical apply, product knowledge mutation, staging or commit/push. Source
 bytes are opaque. Source validity does not establish source authenticity or
-human approval. Stage 13B/13C own extraction/proposal/review/apply; Stage 14
+human approval. Stage 13B/13C own representation/extraction/proposal/audit/review/apply; Stage 14
 remains the end-to-end AI development/completion gate.
+
+### Stage 13B1: Source Representation & Evidence Anchors
+
+This Stage 13B1 candidate adds deterministic representation metadata only:
+
+```text
+CAP receipt -> verified exact bytes -> utf8-lines@1 -> SEG/index -> REP receipt
+```
+
+Source, Capture, Representation, Proposal, Audit and Canonical Product Truth are
+distinct authority layers. A REP is durable canonical provenance metadata with
+`canonical_authority: false`; it cannot mutate or authorize `knowledge/**`,
+`docs/**`, policies, Skills or implementation. No AI, proposal, XRUN, audit,
+human review or canonical apply exists in 13B1.
+
+Durable Git-tracked evidence contains metadata only:
+
+```text
+intake/representations/REP-<32 lowercase hex>.json
+intake/representations/REP-<32 lowercase hex>.segments.jsonl
+```
+
+Rendered source bytes are disposable cache only:
+
+```text
+.generated/source-representations/REP-<id>/segments/SEG-<id>.txt
+```
+
+Durable receipts and JSONL contain IDs, hashes, byte offsets, line numbers and
+adapter identity, never raw/rendered text, quoted customer content, original
+filename/path, username, host, timestamp or PID. Deleting `.generated/**` does
+not invalidate durable evidence; verified CAP bytes can deterministically
+reproduce the same SEG IDs, index and REP ID before rebuilding cache.
+
+Representation v1 has exactly `schema_version`, `profile`, `project_id`,
+`representation_id`, `capture_id`, `capture_content_sha256`, `adapter`,
+`segment_index`, and `canonical_authority`. The adapter is exactly:
+
+```json
+{"id":"utf8-lines","version":1,"options":{}}
+```
+
+Its fingerprint is full lowercase SHA-256 of canonical compact JSON for those
+three fields. The fingerprint deliberately excludes Python source-file bytes:
+behavior/output is independently bound by the exact durable segment-index hash.
+
+Each descriptor has exactly `segment_id`, zero-based `ordinal`, one-based line
+locator, half-open byte `source_span`, exact source hash/size, and exact rendered
+hash/size. SEG identity excludes both REP ID and ordinal and hashes canonical
+JSON containing `project_id`, `capture_id`, adapter fingerprint, locator, source
+span and the four source/rendered hash/size fields. Thus there is no SEG/REP
+identity cycle; ordinal is ordering metadata. REP identity hashes canonical JSON
+containing project/capture identities, capture content hash, adapter fingerprint,
+and exact index SHA/byte/descriptor count. All IDs use the first 32 lowercase
+hexadecimal characters of SHA-256 prefixed by `SEG-` or `REP-`.
+
+`utf8-lines@1` accepts strict UTF-8 and scans physical LF bytes. Each physical
+line becomes one SEG. Its source span/hash includes LF and preceding CR for CRLF.
+Rendered bytes remove only terminal LF or CRLF; lone/embedded CR, BOM, Unicode,
+case and all other whitespace remain byte-exact. Blank physical lines are real
+segments. A terminal LF creates no synthetic EOF segment; an empty source has
+zero segments. Byte offsets count encoded bytes, not Unicode characters. The
+durable JSONL is compact canonical UTF-8 JSON, one descriptor per LF-terminated
+line in exact ordinal sequence; the empty index is zero bytes.
+
+For a reference Capture, `project source represent CAP-ID --adapter utf8-lines
+--input PATH` requires the exact external bytes. Stage 13A path/reparse/TOCTOU
+checks stream them into a neutral temporary `verified.bin`, compare SHA/size to
+the CAP receipt, and only then let the adapter read that temporary copy. For a
+repository snapshot, `--input` is forbidden; the bound snapshot is validated
+and copied through the same verified-byte boundary. Sensitive temporary bytes
+remain in controlled OS temporary storage and are removed on success/failure.
+No network, URL or stdin transport is supported.
+
+Generation is bounded by `MAX_REPRESENTATION_SEGMENTS = 100_000` and
+`MAX_SEGMENT_INDEX_BYTES = 32 * 1024 * 1024`; overflow fails without truncated or
+partial durable REP state. Stage 13A's 256 MiB source bound remains unchanged.
+Matching immutable receipt/index pairs are reused without rewritten bytes or
+mtimes; deterministic-path conflicts fail closed. Missing/corrupt disposable
+segment cache can be rebuilt after exact durable identity reproduction.
+
+Normal `project validate` checks only durable representation provenance: strict
+receipt schema/project/CAP/adapter/REP bindings, safe exact index path, stable
+index hash/bytes/count, canonical strict UTF-8 JSONL, exact ordinals/line
+locators, contiguous monotonic spans covering Capture bytes, SEG recomputation,
+uniqueness and bounds. `.generated/**` is never required. Unexpected `intake/**`
+files fail. Existing projects without `intake/**` remain valid and acquire no
+new path requirements; new projects create only `intake/representations/.gitkeep`.
+
+Validation cannot re-read unavailable reference content and therefore proves
+the durable cryptographic/index contract rather than semantic meaning or source
+authenticity. Reproduction happens during represent/rebuild. No PII/secret
+detection is claimed. Stage 13B2, 13B3 and 13C remain unimplemented; Stage 13
+remains open and Stage 14 remains the end-to-end gate.
 
 ## Normative v1 field contract
 

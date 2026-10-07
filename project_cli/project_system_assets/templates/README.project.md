@@ -21,3 +21,9 @@ Snapshots may contain sensitive customer/personal/commercial data; they are
 excluded by `.llmignore` but remain Git-trackable. No encryption, secret scanning,
 content interpretation or automatic knowledge mutation is provided. `project
 validate` checks receipts and snapshot integrity.
+
+`project source represent CAP-ID --adapter utf8-lines [--input PATH]` creates
+durable text-free line evidence under `intake/representations/` and disposable
+rendered segment cache under `.generated/`. Reference captures require exact
+re-supplied bytes via `--input`; repository snapshots forbid it. Representation
+metadata has no product authority and performs no semantic extraction or apply.

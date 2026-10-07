@@ -18,6 +18,8 @@ from .task_baseline import TaskBaselineError
 from .task_verification import TaskVerifyError, verify_task
 from .source_capture import capture_source
 from .source_layer import KINDS, SourceError
+from .source_representation import represent_source
+from .representation_layer import RepresentationError
 from .sync_planning import plan_sync, SyncPlanError
 from .sync_verification import verify_sync, SyncVerifyError
 from .sync_finalization import finalize_sync, SyncFinalizeError
@@ -65,6 +67,10 @@ def main(argv=None):
     capture.add_argument('--kind',choices=KINDS,required=True)
     capture.add_argument('--media-type',default='application/octet-stream')
     capture.add_argument('--retention',choices=['reference','repository-snapshot'],default='reference')
+    represent=source_commands.add_parser('represent',help='create deterministic durable representation metadata')
+    represent.add_argument('capture_id')
+    represent.add_argument('--adapter',choices=['utf8-lines'],required=True)
+    represent.add_argument('--input')
     q=sp.add_parser('validate'); q.add_argument('--changed',action='store_true',help='Accepted for workflow compatibility; validates the whole knowledge graph.')
     sp.add_parser('generate')
     q=sp.add_parser('context'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='review'); q.add_argument('--skill',action='append',default=[])
@@ -135,11 +141,14 @@ def main(argv=None):
         path,oid=create_object(root,args.type,args.title,args.domain,args.owner); print(f'{oid}\n{path.relative_to(root)}')
     elif args.cmd=='source':
         try:
-            report=capture_source(root,args.path,key=args.key,provider=args.provider,kind=args.kind,
-                                  media_type=args.media_type,retention=args.retention.replace('-','_'))
+            if args.source_command=='capture':
+                report=capture_source(root,args.path,key=args.key,provider=args.provider,kind=args.kind,
+                                      media_type=args.media_type,retention=args.retention.replace('-','_'))
+            else:
+                report=represent_source(root,args.capture_id,adapter=args.adapter,input_path=args.input)
             print(json.dumps(report,sort_keys=True))
-        except SourceError as exc:
-            print(f'source capture failed: {exc}',file=sys.stderr); sys.exit(2)
+        except (SourceError,RepresentationError) as exc:
+            print(f'source {args.source_command} failed: {exc}',file=sys.stderr); sys.exit(2)
     elif args.cmd=='validate':
         issues=validate(root); print_issues(issues); print_object_counts(root); sys.exit(2 if any(x[0] in {'BLOCKING','ERROR'} for x in issues) else 0)
     elif args.cmd=='generate':

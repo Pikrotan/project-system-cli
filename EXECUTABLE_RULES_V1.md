@@ -746,6 +746,8 @@ Existing deterministic Project System invariants remain in place throughout migr
     13B2. Semantic Extraction & Proposal Sealing
         13B2a. Extraction Contract & Deterministic Sealer
         13B2b. Semantic Executor Integration
+            13B2b1. Verified Extraction Pack
+            13B2b2. Authorized Semantic Executor
     13B3. Independent Semantic Audit
     13C. Human Review & Canonical Apply
 14. Bootstrap and end-to-end AI Development Gate
@@ -1961,8 +1963,9 @@ candidate does not self-approve Stage 12C or declare Stage 12 complete.
 
 Stage 12 is independently accepted and published. The roadmap now assigns
 External Source Intake & Canonicalization to Stage 13 and moves the former
-bootstrap/end-to-end gate to Stage 14. Stage 13A and Stage 13B1 are independently
-accepted and published. Stage 13 remains open for 13B2a/13B2b, 13B3 and 13C.
+bootstrap/end-to-end gate to Stage 14. Stage 13A, Stage 13B1 and Stage 13B2a are
+independently accepted and published. Stage 13 remains open for 13B2b1/13B2b2,
+13B3 and 13C.
 
 **External Source != Proposal != Canonical Product Truth.** Source receipts
 are durable canonical provenance facts. They neither become nor authorize
@@ -2179,7 +2182,7 @@ remains open and Stage 14 remains the end-to-end gate.
 
 ### Stage 13B2a: Extraction Contract & Deterministic Sealer
 
-This Stage 13B2a candidate adds no semantic executor or model call. It accepts
+Published Stage 13B2a adds no semantic executor or model call. It accepts
 untrusted JSON produced elsewhere and performs only deterministic validation,
 normalization and immutable sealing:
 
@@ -2342,8 +2345,95 @@ proposal lists, the XRUN-bound Proposal manifest commitment, orphan/partial stat
 and optional snapshot canonical bytes and semantic-to-PROP correspondence.
 Unexpected files fail closed with deterministic
 issue ordering. `.generated/**` is ignored. Stage 13B2b semantic execution,
-Stage 13B3 independent audit and Stage 13C human review/apply remain open. This
-candidate does not self-approve Stage 13B2a or complete Stage 13B2/Stage 13.
+Stage 13B3 independent audit and Stage 13C human review/apply remain open.
+
+### Stage 13B2b1: Verified Extraction Pack
+
+This Stage 13B2b1 candidate adds only deterministic preparation and independent
+verification of a local, disposable Verified Extraction Pack. It performs no AI
+or provider execution, network request, prompt assembly, Skill execution,
+semantic extraction, Proposal generation, audit, approval, or canonical write:
+
+```text
+XCON.presented_segment_ids
+  -> validated durable REP receipt and segment index
+  -> exact rendered SEG cache paths
+  -> safe byte reads plus hash/size verification
+  -> canonical XPACK under .generated/source-extraction-packs/
+```
+
+`project source extraction pack create XCON-ID` never enumerates generated files
+to discover authority. XCON supplies the exact SEG set; durable REP descriptors
+supply locator, rendered SHA-256 and byte count. Each specific rendered cache is
+read through the existing symlink/reparse/regular-file/TOCTOU-aware streaming
+boundary, verified against that descriptor, decoded as strict UTF-8 and copied
+without whitespace or Unicode normalization. Empty rendered segments remain
+present. Missing or corrupt caches fail closed; Stage 13B2b1 does not reopen an
+external reference source or rebuild Stage 13B1 caches. Stale unrelated cache
+files cannot broaden the pack.
+
+The strict profile is `project-system-verified-extraction-pack-v1`. Its exact
+mandatory fields are `schema_version`, `profile`, `project_id`, `contract_id`,
+`representation_id`, `segment_index_sha256`, `allowed_kinds`, `segments`, and
+`canonical_authority=false`. Every segment contains exactly `segment_id`, the
+durable line `locator`, `rendered_sha256`, nonnegative `rendered_bytes`, and
+`text`. Segment order equals XCON order and `allowed_kinds` equals XCON exactly.
+It contains no pack ID, model/provider identity, prompts, executable
+instructions, approval/review state, canonical target, status, private path,
+timestamp, or randomness.
+
+Identity uses the existing compact canonical JSON convention, with no terminal
+newline or self-reference:
+
+```text
+pack_bytes  = canonical_json(pack_document)
+pack_sha256 = SHA256(pack_bytes).hexdigest()
+pack_id     = "XPACK-" + pack_sha256[:32]
+```
+
+The full digest and exact byte count appear only in CLI metadata. The pack is
+stored atomically at
+`.generated/source-extraction-packs/XPACK-<32hex>/pack.json`; no XPACK receipt is
+created in `intake/**`. A completed temporary file is flushed/fsynced on the same
+filesystem and published with an atomic no-clobber hard link. Success statuses
+are only `created` and `existing`; safely read exact matching bytes are reused
+without rewriting. If a destination appears at publication, creation fails
+without overwriting it. A corrupt existing cache fails closed and is neither
+removed, renamed nor overwritten: explicit removal by the user or controlling
+process is required before recreation. There is no automatic `rebuilt_cache` or
+cache deletion command. Filesystems without hard-link support fail closed;
+publication never falls back to a clobbering operation. Unsafe paths and observed
+identity changes fail closed. These guarantees do not cover arbitrary concurrent
+parent-directory mutations or subsequent modification of successfully published
+or reused files. Verification before semantic execution remains mandatory.
+Normal `project validate` ignores this derived cache, so deletion does not
+invalidate the project.
+
+`project source extraction pack verify XPACK-ID` safely rereads exact bytes,
+rejects duplicate keys/non-finite values/unknown fields/noncanonical JSON,
+recomputes the full hash and ID, and reloads the valid durable XCON, REP and
+segment index. It proves exact project/contract/representation/index/kind/SEG
+membership, count, order, locator, hash and byte bindings, then re-encodes each
+text value to verify its durable rendered commitment. Verification is independent
+of rendered SEG caches and original source files; future semantic execution must
+repeat it immediately before use rather than trust an earlier result.
+
+Hard ceilings are 512 segments, 256 KiB per rendered segment and 2 MiB for exact
+canonical pack bytes. They are construction limits, not token estimates. There
+is no truncation, subset selection or batching; a smaller pack requires a more
+narrowly scoped XCON.
+
+XPACK may contain confidential, personal or secret source text and remains
+local. It is excluded from normal AI retrieval with `.generated/**`; there is no
+automatic transfer or redaction. Source instructions are untrusted bytes and are
+never interpreted or executed by the builder. Provenance of bytes is not
+semantic correctness or prompt-injection resistance.
+
+Published XRUN identity does not contain XPACK ID, and sealing an XRUN therefore
+does not prove which pack was delivered to a model. Stage 13B2b2 must add a
+separately verifiable, explicitly authorized execution-provenance link without
+changing published XRUN identity. This Stage 13B2b1 candidate does not implement
+that link, self-approve Stage 13B2b1, or complete Stage 13B2/Stage 13.
 
 ## Normative v1 field contract
 

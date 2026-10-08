@@ -49,6 +49,8 @@ project source capture telegram-export.html --key client-main-chat --provider te
 project source capture brief.pdf --key client-brief --provider generic --kind document --media-type application/pdf --retention repository-snapshot
 project source represent CAP-0123456789abcdef0123456789abcdef --adapter utf8-lines
 project source extraction contract REP-0123456789abcdef0123456789abcdef
+project source extraction pack create XCON-0123456789abcdef0123456789abcdef
+project source extraction pack verify XPACK-0123456789abcdef0123456789abcdef
 project source extraction seal XCON-0123456789abcdef0123456789abcdef submission.json --executor-kind ai --provider openai --model example-model --instruction-sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 project validate
 ```
@@ -61,13 +63,24 @@ scanning claim. New projects exclude snapshots from AI retrieval via `.llmignore
 but do not Git-ignore them. Source files are limited to 256 MiB. See the Stage 13A
 contract in `EXECUTABLE_RULES_V1.md`. Published Stage 13B1 builds text-free
 durable line evidence plus disposable rendered segments from verified UTF-8
-Capture bytes. The Stage 13B2a candidate creates immutable extraction contracts
+Capture bytes. Published Stage 13B2a creates immutable extraction contracts
 and deterministically seals strictly validated external semantic JSON into
 content-minimized XRUN/PROP receipts. XRUN binds a content-free manifest hash of
 the exact durable PROP commitments, including under reference retention. It makes no model call, comparison against
 canonical knowledge, approval, audit or apply. Normalized semantic snapshots are
 stored only with explicit `repository-snapshot` retention and are excluded from
 AI retrieval in newly initialized projects.
+
+The Stage 13B2b1 candidate can build a local disposable Verified Extraction Pack
+from one XCON. It safely rechecks only the exact authorized rendered SEG bytes
+against durable REP commitments and supports independent cache-free verification.
+XPACK is noncanonical, limited to 512 segments, 256 KiB per segment and 2 MiB of
+canonical JSON, may contain sensitive source text, and is never sent to a model.
+Provider execution and the verifiable XPACK-to-executor link remain Stage 13B2b2.
+XPACK creation uses atomic no-clobber hard-link publication and returns only
+`created` or `existing`. Corrupt cache requires explicit removal before recreation;
+it is never automatically overwritten. Unsupported hard links fail closed.
+Pack verification must be repeated before semantic execution, including after reuse.
 
 The CLI does not call an LLM, approve product decisions on its own, mirror Figma, replace GitHub, or treat generated files as canonical truth. `project sync`, `project task`, and `project bootstrap` prepare deterministic work packs for an external AI/human executor.
 

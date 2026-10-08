@@ -38,3 +38,14 @@ commitments. The CLI performs no canonical reconciliation and requires later aud
 human review. Default retention stores no durable semantic statement; explicit
 `--retention repository-snapshot` stores normalized JSON under sensitive
 `intake/extraction-submissions/`, excluded from AI retrieval by `.llmignore`.
+
+`project source extraction pack create XCON-ID` builds a local, disposable
+Verified Extraction Pack from only the XCON-authorized rendered SEG caches after
+checking their durable REP hash/byte commitments. `project source extraction pack
+verify XPACK-ID` independently verifies its canonical bytes without requiring the
+rendered cache or original source. XPACK may contain sensitive text, remains under
+`.generated/**`, is never canonical truth, and is not sent to any provider.
+Creation uses atomic no-clobber hard links and returns `created` or `existing`.
+Corrupt XPACK cache requires explicit removal before recreation; automatic rebuild
+is unavailable. Unsupported hard links fail closed. Reverify before semantic use;
+publication/reuse does not prevent later edits or arbitrary parent-directory races.

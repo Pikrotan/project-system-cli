@@ -22,6 +22,11 @@ from .source_representation import represent_source
 from .representation_layer import RepresentationError
 from .source_extraction import create_extraction_contract, seal_extraction
 from .extraction_layer import ExtractionError, PROPOSAL_KINDS
+from .extraction_pack import (
+    ExtractionPackError,
+    create_extraction_pack,
+    verify_extraction_pack,
+)
 from .sync_planning import plan_sync, SyncPlanError
 from .sync_verification import verify_sync, SyncVerifyError
 from .sync_finalization import finalize_sync, SyncFinalizeError
@@ -87,6 +92,12 @@ def main(argv=None):
     seal.add_argument('--model',required=True)
     seal.add_argument('--instruction-sha256',required=True)
     seal.add_argument('--retention',choices=['reference','repository-snapshot'],default='reference')
+    pack=extraction_commands.add_parser('pack',help='create or verify a disposable Verified Extraction Pack')
+    pack_commands=pack.add_subparsers(dest='pack_command',required=True)
+    pack_create=pack_commands.add_parser('create',help='create a Verified Extraction Pack from one XCON')
+    pack_create.add_argument('contract_id')
+    pack_verify=pack_commands.add_parser('verify',help='independently verify one cached XPACK')
+    pack_verify.add_argument('pack_id')
     q=sp.add_parser('validate'); q.add_argument('--changed',action='store_true',help='Accepted for workflow compatibility; validates the whole knowledge graph.')
     sp.add_parser('generate')
     q=sp.add_parser('context'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='review'); q.add_argument('--skill',action='append',default=[])
@@ -166,6 +177,10 @@ def main(argv=None):
                 report=create_extraction_contract(
                     root,args.representation_id,segment_ids=args.segment_ids,
                     allowed_kinds=args.allowed_kinds)
+            elif args.extraction_command=='pack':
+                report=(create_extraction_pack(root,args.contract_id)
+                        if args.pack_command=='create'
+                        else verify_extraction_pack(root,args.pack_id))
             else:
                 report=seal_extraction(
                     root,args.contract_id,args.submission_path,
@@ -173,8 +188,9 @@ def main(argv=None):
                     model=args.model,instruction_sha256=args.instruction_sha256,
                     retention=args.retention.replace('-','_'))
             print(json.dumps(report,sort_keys=True))
-        except (SourceError,RepresentationError,ExtractionError) as exc:
-            action=(f'extraction {args.extraction_command}'
+        except (SourceError,RepresentationError,ExtractionError,ExtractionPackError) as exc:
+            action=(f'extraction {args.extraction_command}' +
+                    (f' {args.pack_command}' if args.extraction_command=='pack' else '')
                     if args.source_command=='extraction' else args.source_command)
             print(f'source {action} failed: {exc}',file=sys.stderr); sys.exit(2)
     elif args.cmd=='validate':

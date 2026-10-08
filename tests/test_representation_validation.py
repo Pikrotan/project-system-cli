@@ -79,10 +79,12 @@ def test_valid_representation_survives_generated_cache_deletion(represented):
     assert load_object_layer(root).objects == {}
 
 
-def test_project_init_creates_only_current_intake_directory(tmp_path):
+def test_project_init_creates_current_known_intake_directories(tmp_path):
     root = init_project('Demo', tmp_path / 'project')
     assert (root / 'intake/representations/.gitkeep').read_bytes() == b''
-    assert sorted(path.name for path in (root / 'intake').iterdir()) == ['representations']
+    assert sorted(path.name for path in (root / 'intake').iterdir()) == [
+        'extraction-contracts', 'extraction-runs', 'extraction-submissions',
+        'proposals', 'representations']
 
 
 def test_legacy_project_without_intake_remains_identical(tmp_path):

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Extraction Run v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profile", "project_id", "run_id", "contract_id", "representation_id", "sealer_profile", "executor", "submission", "proposal_ids", "canonical_authority", "human_review_required"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "profile": {"const": "project-system-extraction-run-v1"},
+    "project_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+    "run_id": {"type": "string", "pattern": "^XRUN-[0-9a-f]{32}$"},
+    "contract_id": {"type": "string", "pattern": "^XCON-[0-9a-f]{32}$"},
+    "representation_id": {"type": "string", "pattern": "^REP-[0-9a-f]{32}$"},
+    "sealer_profile": {"const": "project-system-extraction-sealer-v1"},
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "provider", "model", "instruction_sha256"],
+      "properties": {
+        "kind": {"const": "ai"},
+        "provider": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+        "model": {"type": "string", "minLength": 1},
+        "instruction_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "submission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "bytes", "proposals", "proposal_manifest_sha256", "retention", "snapshot"],
+      "properties": {
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 2097152},
+        "proposals": {"type": "integer", "minimum": 1, "maximum": 256},
+        "proposal_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "retention": {"enum": ["reference", "repository_snapshot"]},
+        "snapshot": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "sha256", "bytes"],
+              "properties": {
+                "path": {"type": "string", "pattern": "^intake/extraction-submissions/XRUN-[0-9a-f]{32}/submission\\.json$"},
+                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "bytes": {"type": "integer", "minimum": 1, "maximum": 2097152}
+              }
+            }
+          ]
+        }
+      }
+    },
+    "proposal_ids": {"type": "array", "minItems": 1, "maxItems": 256, "uniqueItems": true, "items": {"type": "string", "pattern": "^PROP-[0-9a-f]{32}$"}},
+    "canonical_authority": {"const": false},
+    "human_review_required": {"const": true}
+  }
+}

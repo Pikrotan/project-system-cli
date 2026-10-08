@@ -235,12 +235,6 @@ def inspect_representation_layer(root, config, source_layer):
             error(relative, 'representation storage cannot be inspected safely')
             return []
 
-    top = children('intake')
-    if not top and not issues:
-        return RepresentationLayer(representations, ())
-    for rel, _, info in top:
-        if rel != 'intake/representations' or not stat.S_ISDIR(info.st_mode):
-            error(rel, 'unexpected intake layer entry')
     files = children('intake/representations')
     receipts, indexes = {}, {}
     for rel, path, info in files:

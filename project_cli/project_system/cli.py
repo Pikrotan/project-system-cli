@@ -20,6 +20,8 @@ from .source_capture import capture_source
 from .source_layer import KINDS, SourceError
 from .source_representation import represent_source
 from .representation_layer import RepresentationError
+from .source_extraction import create_extraction_contract, seal_extraction
+from .extraction_layer import ExtractionError, PROPOSAL_KINDS
 from .sync_planning import plan_sync, SyncPlanError
 from .sync_verification import verify_sync, SyncVerifyError
 from .sync_finalization import finalize_sync, SyncFinalizeError
@@ -71,6 +73,20 @@ def main(argv=None):
     represent.add_argument('capture_id')
     represent.add_argument('--adapter',choices=['utf8-lines'],required=True)
     represent.add_argument('--input')
+    extraction=source_commands.add_parser('extraction',help='create deterministic extraction contracts and seal untrusted submissions')
+    extraction_commands=extraction.add_subparsers(dest='extraction_command',required=True)
+    contract=extraction_commands.add_parser('contract',help='create an immutable extraction contract for one REP')
+    contract.add_argument('representation_id')
+    contract.add_argument('--segment',action='append',dest='segment_ids')
+    contract.add_argument('--allow-kind',action='append',dest='allowed_kinds',choices=PROPOSAL_KINDS)
+    seal=extraction_commands.add_parser('seal',help='normalize and seal one untrusted semantic submission')
+    seal.add_argument('contract_id')
+    seal.add_argument('submission_path')
+    seal.add_argument('--executor-kind',choices=['ai'],required=True)
+    seal.add_argument('--provider',required=True)
+    seal.add_argument('--model',required=True)
+    seal.add_argument('--instruction-sha256',required=True)
+    seal.add_argument('--retention',choices=['reference','repository-snapshot'],default='reference')
     q=sp.add_parser('validate'); q.add_argument('--changed',action='store_true',help='Accepted for workflow compatibility; validates the whole knowledge graph.')
     sp.add_parser('generate')
     q=sp.add_parser('context'); q.add_argument('target'); q.add_argument('--budget',choices=['small','medium','large'],default='medium'); q.add_argument('--mode',default='review'); q.add_argument('--skill',action='append',default=[])
@@ -144,11 +160,23 @@ def main(argv=None):
             if args.source_command=='capture':
                 report=capture_source(root,args.path,key=args.key,provider=args.provider,kind=args.kind,
                                       media_type=args.media_type,retention=args.retention.replace('-','_'))
-            else:
+            elif args.source_command=='represent':
                 report=represent_source(root,args.capture_id,adapter=args.adapter,input_path=args.input)
+            elif args.extraction_command=='contract':
+                report=create_extraction_contract(
+                    root,args.representation_id,segment_ids=args.segment_ids,
+                    allowed_kinds=args.allowed_kinds)
+            else:
+                report=seal_extraction(
+                    root,args.contract_id,args.submission_path,
+                    executor_kind=args.executor_kind,provider=args.provider,
+                    model=args.model,instruction_sha256=args.instruction_sha256,
+                    retention=args.retention.replace('-','_'))
             print(json.dumps(report,sort_keys=True))
-        except (SourceError,RepresentationError) as exc:
-            print(f'source {args.source_command} failed: {exc}',file=sys.stderr); sys.exit(2)
+        except (SourceError,RepresentationError,ExtractionError) as exc:
+            action=(f'extraction {args.extraction_command}'
+                    if args.source_command=='extraction' else args.source_command)
+            print(f'source {action} failed: {exc}',file=sys.stderr); sys.exit(2)
     elif args.cmd=='validate':
         issues=validate(root); print_issues(issues); print_object_counts(root); sys.exit(2 if any(x[0] in {'BLOCKING','ERROR'} for x in issues) else 0)
     elif args.cmd=='generate':

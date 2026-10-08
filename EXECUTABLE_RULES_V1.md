@@ -744,6 +744,8 @@ Existing deterministic Project System invariants remain in place throughout migr
     13A. Source Capture & Provenance
     13B1. Source Representation & Evidence Anchors
     13B2. Semantic Extraction & Proposal Sealing
+        13B2a. Extraction Contract & Deterministic Sealer
+        13B2b. Semantic Executor Integration
     13B3. Independent Semantic Audit
     13C. Human Review & Canonical Apply
 14. Bootstrap and end-to-end AI Development Gate
@@ -1959,8 +1961,8 @@ candidate does not self-approve Stage 12C or declare Stage 12 complete.
 
 Stage 12 is independently accepted and published. The roadmap now assigns
 External Source Intake & Canonicalization to Stage 13 and moves the former
-bootstrap/end-to-end gate to Stage 14. Stage 13A is independently accepted and
-published. Stage 13 remains open for 13B1/13B2/13B3 and 13C.
+bootstrap/end-to-end gate to Stage 14. Stage 13A and Stage 13B1 are independently
+accepted and published. Stage 13 remains open for 13B2a/13B2b, 13B3 and 13C.
 
 **External Source != Proposal != Canonical Product Truth.** Source receipts
 are durable canonical provenance facts. They neither become nor authorize
@@ -2081,7 +2083,7 @@ remains the end-to-end AI development/completion gate.
 
 ### Stage 13B1: Source Representation & Evidence Anchors
 
-This Stage 13B1 candidate adds deterministic representation metadata only:
+Published Stage 13B1 adds deterministic representation metadata only:
 
 ```text
 CAP receipt -> verified exact bytes -> utf8-lines@1 -> SEG/index -> REP receipt
@@ -2163,15 +2165,185 @@ Normal `project validate` checks only durable representation provenance: strict
 receipt schema/project/CAP/adapter/REP bindings, safe exact index path, stable
 index hash/bytes/count, canonical strict UTF-8 JSONL, exact ordinals/line
 locators, contiguous monotonic spans covering Capture bytes, SEG recomputation,
-uniqueness and bounds. `.generated/**` is never required. Unexpected `intake/**`
-files fail. Existing projects without `intake/**` remain valid and acquire no
-new path requirements; new projects create only `intake/representations/.gitkeep`.
+uniqueness and bounds. `.generated/**` is never required. A central intake
+namespace inspector now owns known top-level siblings; the representation layer
+owns only `intake/representations/**`. Unexpected `intake/**` files still fail.
+Existing projects without `intake/**` remain valid and acquire no new path
+requirements.
 
 Validation cannot re-read unavailable reference content and therefore proves
 the durable cryptographic/index contract rather than semantic meaning or source
 authenticity. Reproduction happens during represent/rebuild. No PII/secret
-detection is claimed. Stage 13B2, 13B3 and 13C remain unimplemented; Stage 13
+detection is claimed. Stage 13B2b, 13B3 and 13C remain unimplemented; Stage 13
 remains open and Stage 14 remains the end-to-end gate.
+
+### Stage 13B2a: Extraction Contract & Deterministic Sealer
+
+This Stage 13B2a candidate adds no semantic executor or model call. It accepts
+untrusted JSON produced elsewhere and performs only deterministic validation,
+normalization and immutable sealing:
+
+```text
+REP / durable SEG index
+  -> XCON
+  -> untrusted semantic submission
+  -> deterministic normalization
+  -> content-free Proposal manifest commitment
+  -> XRUN -> PROP receipts
+```
+
+AI output is data, never authority. Source, Capture, Representation, Proposal,
+Audit and Canonical Product Truth remain distinct. Every new receipt has
+`canonical_authority: false`; XRUN and PROP also have
+`human_review_required: true`. No knowledge comparison, canonical target, patch,
+approval or mutable lifecycle status exists. Declared executor metadata records
+caller-supplied provenance only and does not prove that a hosted provider or
+model produced the submission.
+
+The central intake inspector owns only top-level namespace safety. Known optional
+roots are `representations`, `extraction-contracts`, `extraction-runs`,
+`proposals`, and `extraction-submissions`. Unknown/non-directory/symlink/reparse
+entries fail closed. Each sublayer alone validates its artifact semantics.
+Legacy projects without `intake/**` and Stage-13B1-only projects remain valid.
+
+Durable Git-tracked layout is:
+
+```text
+intake/extraction-contracts/XCON-<32hex>.json
+intake/extraction-runs/XRUN-<32hex>.json
+intake/proposals/PROP-<32hex>.json
+intake/extraction-submissions/XRUN-<32hex>/submission.json  # explicit snapshot only
+```
+
+New projects create empty `.gitkeep` files for these roots and add
+`intake/extraction-submissions/**` to `.llmignore`, not `.gitignore`. Existing
+projects are not rewritten. The optional cache at
+`.generated/source-extractions/<XRUN-ID>/submission.json` is disposable and is
+never required by validation.
+
+#### Extraction contract
+
+`project source extraction contract REP-ID [--segment SEG-ID ...]
+[--allow-kind KIND ...]` creates strict profile
+`project-system-extraction-contract-v1`. Its exact fields are
+`schema_version`, `profile`, `project_id`, `contract_id`, `representation_id`,
+`presented_segment_ids`, `allowed_kinds`, derived `coverage`, and
+`canonical_authority`. At least one presented SEG must exist in the referenced
+durable REP index. Caller ordering is discarded: SEG IDs use REP ordinal order;
+allowed kinds use the fixed registry order:
+
+```text
+requirement, decision, risk, question
+```
+
+Duplicates and unknown values fail rather than being deduplicated. With no SEG
+flags all REP segments are used; zero-segment REPs fail. The contract is bounded
+by 10,000 presented segments and 4 MiB. Coverage records presented count,
+representation count and exact completeness, and is recomputed by validation.
+
+XCON identity is `XCON-` plus the first 32 lowercase hexadecimal characters of
+SHA-256 over canonical JSON containing exactly:
+
+```text
+profile, project_id, representation_id,
+presented_segment_ids, allowed_kinds
+```
+
+Derived coverage is intentionally excluded. There is no semantic text in XCON.
+
+#### Untrusted submission and normalization
+
+The strict `project-system-extraction-submission-v1` input has exactly
+`schema_version`, `profile`, and a non-empty `proposals` array. Every Proposal
+input has exactly `kind`, `statement`, `support`, and `evidence_segment_ids`.
+Authority/approval/target/patch/object/status fields are rejected, not stripped.
+Kind must be globally known and allowed by XCON. Support is exactly
+`explicit|inferred|ambiguous` and remains the executor's unverified declaration.
+Statements are non-empty, not whitespace-only, and at most 8 KiB UTF-8; accepted
+text is not trimmed, case-folded or Unicode-normalized. Evidence is non-empty,
+unique, at most 64 IDs, restricted to XCON-presented SEG IDs, and normalized to
+XCON order.
+
+Raw input is bounded to 4 MiB before strict UTF-8 JSON parsing. Duplicate keys,
+non-finite values, unknown fields, wrong types, empty input, more than 256
+proposals and excess nesting/decoder failure fail closed. Each exact normalized
+Proposal payload is canonical JSON of only its four allowed fields. Payload hash
+is SHA-256 of those bytes. Proposal input order is non-authoritative: records sort
+by `(payload_sha256, payload_bytes)`; identical normalized payloads are rejected.
+The full canonical normalized submission is bounded to 2 MiB and its exact hash,
+byte count and proposal count are sealed. That normalized submission SHA is the
+commitment to the exact semantic normalized bytes.
+
+#### XRUN and PROP
+
+`project source extraction seal XCON-ID SUBMISSION_PATH --executor-kind ai
+--provider PROVIDER --model MODEL --instruction-sha256 SHA256
+[--retention reference|repository-snapshot]` safely reads the untrusted regular
+file once through the Stage-13A lstat/fstat/TOCTOU boundary. It never verifies a
+path and then reopens it for parsing, and private local paths do not enter
+receipts or controlled errors. There is no network, SDK or model execution.
+
+Executor fields are exactly `kind=ai`, bounded ASCII provider identifier,
+bounded non-control model string, and lowercase instruction SHA-256. The sealer
+profile is `project-system-extraction-sealer-v1`.
+
+XRUN v1 has exactly `schema_version`, `profile`, `project_id`, `run_id`,
+`contract_id`, `representation_id`, `sealer_profile`, `executor`, `submission`,
+`proposal_ids`, `canonical_authority`, and `human_review_required`. XRUN identity
+excludes PROP IDs to avoid a cycle and hashes canonical JSON containing exactly:
+
+```text
+project_id, contract_id, representation_id, sealer_profile, executor,
+submission_sha256, submission_bytes, proposal_count,
+proposal_manifest_sha256, retention
+```
+
+`submission` contains exactly `sha256`, `bytes`, `proposals`,
+`proposal_manifest_sha256`, `retention`, and `snapshot`. Before XRUN identity is
+computed, the sealer builds the exact content-free manifest profile
+`project-system-proposal-manifest-v1` in normalized Proposal order. Each manifest
+entry contains only `payload_sha256`, positive `payload_bytes`, and normalized
+`evidence_segment_ids`. SHA-256 over canonical JSON of that exact manifest is
+`proposal_manifest_sha256`; the manifest itself is not persisted. It contains no
+statement, kind, support, PROP/XRUN ID, target, approval, path, or timestamp.
+Thus the identity DAG is normalized Proposal payloads -> content-free manifest
+-> manifest hash -> XRUN ID -> PROP IDs, with no XRUN/PROP cycle.
+
+PROP v1 contains no statement or kind. Its exact fields are `schema_version`,
+`profile`, `project_id`, `proposal_id`, `run_id`, `payload_sha256`,
+`payload_bytes`, normalized `evidence_segment_ids`, `canonical_authority`, and
+`human_review_required`. PROP identity hashes canonical JSON containing exactly
+`project_id`, `run_id`, payload hash/bytes and evidence IDs. It has no ordinal,
+target or approval state.
+
+Default `reference` retention stores no durable semantic payload. The manifest
+hash is the content-free durable bridge from the sealing result to the exact
+PROP receipt commitments: validation reconstructs it from listed PROP payload
+hash/bytes and evidence IDs, but cannot reconstruct or claim knowledge of the
+unavailable semantic statements. Explicit `repository-snapshot` stores the exact normalized
+canonical submission, never raw provider transport output, under its XRUN path;
+snapshot hash/bytes equal XRUN submission metadata. Retention participates in
+XRUN identity because these storage contracts differ. Snapshot content can be
+sensitive durable Git data and has no provider-authenticity claim. Snapshot
+validation additionally reconstructs the same manifest directly from the exact
+normalized records before reproducing the exact PROP receipts and IDs.
+
+Publication preflights deterministic destinations and uses same-filesystem
+no-clobber hard links. Matching immutable artifacts are reused; contradictions
+fail. On ordinary failure only files created by that invocation and still
+matching its device/inode are rolled back. This is not a filesystem transaction:
+a crash can leave partial immutable state, which normal validation rejects.
+Missing/corrupt disposable normalized cache can be rebuilt only after the same
+normalized submission, XRUN and PROP identities are reproduced.
+
+Normal `project validate` verifies strict schemas, filenames/IDs, project and
+REP/XCON/XRUN/PROP bindings, canonical orders, bounds, coverage, identities,
+proposal lists, the XRUN-bound Proposal manifest commitment, orphan/partial state
+and optional snapshot canonical bytes and semantic-to-PROP correspondence.
+Unexpected files fail closed with deterministic
+issue ordering. `.generated/**` is ignored. Stage 13B2b semantic execution,
+Stage 13B3 independent audit and Stage 13C human review/apply remain open. This
+candidate does not self-approve Stage 13B2a or complete Stage 13B2/Stage 13.
 
 ## Normative v1 field contract
 

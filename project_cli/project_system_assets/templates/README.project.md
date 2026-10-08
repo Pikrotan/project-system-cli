@@ -27,3 +27,14 @@ durable text-free line evidence under `intake/representations/` and disposable
 rendered segment cache under `.generated/`. Reference captures require exact
 re-supplied bytes via `--input`; repository snapshots forbid it. Representation
 metadata has no product authority and performs no semantic extraction or apply.
+
+`project source extraction contract REP-ID` creates an immutable allowlist of
+presented SEG evidence and proposal kinds. A separate external executor may
+produce strict JSON; `project source extraction seal XCON-ID SUBMISSION_PATH
+--executor-kind ai --provider PROVIDER --model MODEL --instruction-sha256 SHA256`
+normalizes and seals it into non-authoritative XRUN/PROP receipts. The CLI makes
+no model call; XRUN binds a content-free manifest hash of the exact durable PROP
+commitments. The CLI performs no canonical reconciliation and requires later audit and
+human review. Default retention stores no durable semantic statement; explicit
+`--retention repository-snapshot` stores normalized JSON under sensitive
+`intake/extraction-submissions/`, excluded from AI retrieval by `.llmignore`.

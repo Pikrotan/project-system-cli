@@ -2570,6 +2570,101 @@ approval/task lifecycle. A new execution after unknown delivery, if ever allowed
 in a later production stage, must be a distinct explicitly authorized attempt and
 must not imply that remote duplication is impossible.
 
+### Stage 13B2b2-B1: test-only XINV Core (candidate)
+
+B1 is an explicit opt-in attempt version, not a reinterpretation of Stage A.
+`prepare_attempt(..., schema_version=2)` selects schema
+`execution-attempt-v2.schema.json` and profile
+`project-system-execution-attempt-test-v2`. The default remains v1, whose schema,
+checkpoint layout and delivery-unknown interpretation are preserved. Project
+validation independently selects the declared version and rejects mixed profiles,
+mixed slots, unknown paths and contradictory transitions. There is no migration
+or automatic redispatch of an existing attempt.
+
+#### V2 layout and terminal ownership
+
+```text
+intake/executions/ATTEMPT-<32 lowercase hex>/
+  01-prepared.json
+  02-boundary.json
+  03-outcome.json
+```
+
+The first two slots retain PREPARED and DISPATCH_INTENT (or explicit predispatch
+DISPOSITION abandoned). A dispatched v2 attempt has exactly one immutable terminal
+slot: RESPONSE_RECORDED or UNRESOLVED. Both compete for `03-outcome.json` through
+the existing atomic hard-link no-clobber publication; an identical second outcome
+is still rejected, never treated as permission to execute again. Only the process
+that successfully creates intent may call the fixed deterministic fake adapter.
+`close_test_attempt(..., outcome='unresolved')` may close delivery unknown with an
+operator-unresolved observation but never cancel transport or assert a response.
+
+V2 test authorization binds the exact PREPARED checkpoint hash as well as the
+contract hash. Its process-local capability uses a v2 domain-separated HMAC;
+durable authorization records commit to both bindings. This remains test harness
+authorization, never production or human approval.
+
+#### Embedded XINV v1
+
+The terminal checkpoint's `data` contains only `authorization` and `xinv`.
+XINV schema/profile v1 is embedded in the packaged v2 attempt schema, with profile
+`project-system-execution-invocation-test-v1`. There is no separately published
+XINV file. `invocation_id` is `XINV-` plus the first 32 lowercase hex characters of
+SHA-256 of canonical JSON of the XINV record excluding its own ID. The enclosing
+checkpoint separately hashes its complete canonical contents, including XINV.
+
+Required XINV fields are schema_version, profile, invocation_id, project_id,
+attempt_id, prepared_sha256, contract_sha256, dispatch_intent_sha256,
+authorization_sha256, observation, response, retention and the six explicit false
+claims: canonical_authority, semantic_evidence, model_authenticity_verified,
+human_approval_verified, task_completion_claimed, response_bytes_available.
+`response` is null for UNRESOLVED or an exact `{sha256, bytes}` commitment for
+RESPONSE_RECORDED. Only metadata_only retention is valid. All version/count/limit
+fields require exact Python integer types in addition to schema constraints;
+integral floats and booleans are not coerced.
+
+Only the fixed fake dispatch path may create a response observation. It checks
+the actually observed bytes against the pinned fake protocol, hashes/counts them,
+and records no payload. Independent inspection checks every binding, recomputes
+the XINV ID, and checks the response commitment against that same fixed protocol.
+No caller-supplied response, generic executor, provider assertion or sealing API
+is introduced. RESPONSE_RECORDED means only a verified test-only byte observation,
+not model authenticity, semantic correctness, human approval, extraction success
+or task completion. It supplies no XRUN provenance link or semantic Evidence.
+
+`fake_success` is permitted only for the success scenario with the exact pinned
+response within limits. Fixed after_intent, timeout, unknown_delivery and
+malformed_response observations produce UNRESOLVED with null response; a pinned
+response exceeding a smaller authorized limit is also unresolved/malformed.
+`operator_unresolved` is an explicit closure, not inferred delivery. A substituted
+or unrecognized fake result fails closed without fabricating a terminal record.
+
+#### Crash classification and limits
+
+| Durable v2 state | Independent classification |
+|---|---|
+| PREPARED | Incomplete/BLOCKING; explicit test authorization required |
+| DISPATCH_INTENT, absent outcome | DELIVERY_UNKNOWN/BLOCKING; no retry |
+| Explicit abandoned boundary | ABANDONED/WARNING; no dispatch |
+| Valid RESPONSE_RECORDED outcome | Terminal/WARNING; no semantic Evidence |
+| Valid UNRESOLVED outcome | Terminal/WARNING; no retry or response claim |
+| Orphan, missing predecessor, mixed/corrupt artifacts | ERROR; explicit intervention, no fabricated recovery |
+
+A real process crash after transient response observation, or just before terminal
+publication, leaves delivery unknown even when a fake response was received. No
+recovery scans staging or manufactures success. A crash after the hard link leaves
+the complete terminal checkpoint independently inspectable. Completed checkpoint
+bytes are schema/type/hash-validated before publication, flushed and file-fsynced;
+this is not proof of universal power-loss directory durability. The Stage A
+trusted-root/cooperative-writer threat model still applies: this is not an OS
+sandbox, a signed external attestation or protection against wholesale hostile
+rewriting/deletion of all receipts. In-memory capabilities are not persistent
+approval evidence. Generated staging is disposable and not a durable outcome.
+
+B1 does not implement response payload storage, replay, XRUN linking, production
+authorization, real models/network, B2/B3 or a new task-completion mechanism.
+Published SRC/CAP/REP/SEG/XCON/XPACK/XRUN/PROP identities remain unchanged.
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.

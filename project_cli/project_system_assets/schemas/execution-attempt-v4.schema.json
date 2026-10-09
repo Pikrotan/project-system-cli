@@ -1,0 +1,603 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Stage B3 test-only v4 extraction fixture checkpoint and embedded XINV v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile",
+    "project_id",
+    "attempt_id",
+    "state",
+    "previous_sha256",
+    "data",
+    "checkpoint_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 4,
+      "type": "integer"
+    },
+    "profile": {
+      "const": "project-system-execution-attempt-test-v4"
+    },
+    "project_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "maxLength": 128
+    },
+    "attempt_id": {
+      "$ref": "#/$defs/attempt"
+    },
+    "state": {
+      "enum": [
+        "PREPARED",
+        "DISPATCH_INTENT",
+        "DISPOSITION",
+        "RESPONSE_RECORDED",
+        "UNRESOLVED"
+      ]
+    },
+    "previous_sha256": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/sha"
+        }
+      ]
+    },
+    "checkpoint_sha256": {
+      "$ref": "#/$defs/sha"
+    },
+    "data": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "PREPARED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "previous_sha256": {
+            "type": "null"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "contract",
+              "contract_sha256"
+            ],
+            "properties": {
+              "contract": {
+                "$ref": "#/$defs/contract"
+              },
+              "contract_sha256": {
+                "$ref": "#/$defs/sha"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "DISPATCH_INTENT"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "previous_sha256": {
+            "$ref": "#/$defs/sha"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "authorization"
+            ],
+            "properties": {
+              "authorization": {
+                "$ref": "#/$defs/authorization"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "DISPOSITION"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "previous_sha256": {
+            "$ref": "#/$defs/sha"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "authorization",
+              "outcome"
+            ],
+            "properties": {
+              "authorization": {
+                "$ref": "#/$defs/authorization"
+              },
+              "outcome": {
+                "const": "abandoned"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "RESPONSE_RECORDED",
+              "UNRESOLVED"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "additionalProperties": false,
+            "type": "object",
+            "properties": {
+              "xinv": {
+                "$ref": "#/$defs/xinv"
+              },
+              "authorization": {
+                "$ref": "#/$defs/authorization"
+              }
+            },
+            "required": [
+              "authorization",
+              "xinv"
+            ]
+          },
+          "previous_sha256": {
+            "$ref": "#/$defs/sha"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "UNRESOLVED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "properties": {
+              "xinv": {
+                "properties": {
+                  "observation": {
+                    "enum": [
+                      "after_intent",
+                      "timeout",
+                      "unknown_delivery",
+                      "malformed_response",
+                      "operator_unresolved"
+                    ]
+                  },
+                  "response": {
+                    "type": "null"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "RESPONSE_RECORDED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "properties": {
+              "xinv": {
+                "properties": {
+                  "observation": {
+                    "const": "fixture_success"
+                  },
+                  "response": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "attempt": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 40,
+      "pattern": "^ATTEMPT-[0-9a-f]{32}$"
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "contract_sha256",
+        "authorization_sha256",
+        "prepared_sha256"
+      ],
+      "properties": {
+        "kind": {
+          "const": "test_only"
+        },
+        "contract_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "authorization_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "prepared_sha256": {
+          "$ref": "#/$defs/sha"
+        }
+      }
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "attempt_id",
+        "contract_id",
+        "contract_sha256",
+        "pack_id",
+        "pack_sha256",
+        "pack_bytes",
+        "instruction_sha256",
+        "instruction_bytes",
+        "adapter",
+        "model",
+        "options",
+        "execution_mode",
+        "allowed_destination",
+        "limits",
+        "retention",
+        "scope"
+      ],
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "maxLength": 128
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/attempt"
+        },
+        "contract_id": {
+          "type": "string",
+          "minLength": 37,
+          "maxLength": 37,
+          "pattern": "^XCON-[0-9a-f]{32}$"
+        },
+        "contract_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "pack_id": {
+          "type": "string",
+          "minLength": 38,
+          "maxLength": 38,
+          "pattern": "^XPACK-[0-9a-f]{32}$"
+        },
+        "pack_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "pack_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2097152
+        },
+        "instruction_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "instruction_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "adapter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "version"
+          ],
+          "properties": {
+            "id": {
+              "const": "deterministic-extraction-fixture"
+            },
+            "version": {
+              "const": "1"
+            }
+          }
+        },
+        "model": {
+          "const": "synthetic-not-ai"
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scenario"
+          ],
+          "properties": {
+            "scenario": {
+              "enum": [
+                "success",
+                "before_dispatch",
+                "malformed_response",
+                "interrupted_after_response"
+              ]
+            }
+          }
+        },
+        "execution_mode": {
+          "const": "local_fake"
+        },
+        "allowed_destination": {
+          "const": "none"
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_pack_bytes",
+            "max_response_bytes",
+            "timeout_seconds"
+          ],
+          "properties": {
+            "max_pack_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2097152
+            },
+            "max_response_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30
+            }
+          }
+        },
+        "retention": {
+          "const": "sealed_local"
+        },
+        "scope": {
+          "const": "extraction_only"
+        }
+      }
+    },
+    "xinv": {
+      "additionalProperties": false,
+      "type": "object",
+      "properties": {
+        "prepared_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "retention": {
+          "const": "sealed_local"
+        },
+        "model_authenticity_verified": {
+          "type": "boolean",
+          "const": false
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/attempt"
+        },
+        "observation": {
+          "enum": [
+            "fixture_success",
+            "after_intent",
+            "timeout",
+            "unknown_delivery",
+            "malformed_response",
+            "operator_unresolved"
+          ]
+        },
+        "schema_version": {
+          "type": "integer",
+          "const": 3
+        },
+        "dispatch_intent_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "authorization_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "contract_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "invocation_id": {
+          "maxLength": 37,
+          "minLength": 37,
+          "type": "string",
+          "pattern": "^XINV-[0-9a-f]{32}$"
+        },
+        "task_completion_claimed": {
+          "type": "boolean",
+          "const": false
+        },
+        "project_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "maxLength": 128
+        },
+        "semantic_evidence": {
+          "type": "boolean",
+          "const": false
+        },
+        "profile": {
+          "const": "project-system-execution-invocation-test-v3"
+        },
+        "human_approval_verified": {
+          "type": "boolean",
+          "const": false
+        },
+        "response": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "type": "object",
+              "properties": {
+                "bytes": {
+                  "minimum": 1,
+                  "type": "integer",
+                  "maximum": 65536
+                },
+                "sha256": {
+                  "$ref": "#/$defs/sha"
+                }
+              },
+              "required": [
+                "sha256",
+                "bytes"
+              ]
+            }
+          ]
+        },
+        "canonical_authority": {
+          "type": "boolean",
+          "const": false
+        },
+        "sealed_payload": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "path",
+                "sha256",
+                "bytes"
+              ],
+              "properties": {
+                "bytes": {
+                  "minimum": 1,
+                  "maximum": 65536,
+                  "type": "integer"
+                },
+                "path": {
+                  "pattern": "^\\.project-local/storage/executions/ATTEMPT-[0-9a-f]{32}/response\\.bin$",
+                  "type": "string",
+                  "maxLength": 128
+                },
+                "sha256": {
+                  "$ref": "#/$defs/sha"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "attempt_id",
+        "authorization_sha256",
+        "canonical_authority",
+        "contract_sha256",
+        "dispatch_intent_sha256",
+        "human_approval_verified",
+        "invocation_id",
+        "model_authenticity_verified",
+        "observation",
+        "prepared_sha256",
+        "profile",
+        "project_id",
+        "response",
+        "retention",
+        "schema_version",
+        "semantic_evidence",
+        "task_completion_claimed",
+        "sealed_payload"
+      ],
+      "allOf": [
+        {
+          "then": {
+            "properties": {
+              "sealed_payload": {
+                "type": "object"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "response": {
+                "type": "object"
+              },
+              "retention": {
+                "const": "sealed_local"
+              }
+            },
+            "required": [
+              "retention",
+              "response"
+            ]
+          },
+          "else": {
+            "properties": {
+              "sealed_payload": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

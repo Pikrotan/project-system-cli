@@ -1,0 +1,285 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Test-only execution content provenance link v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile",
+    "link_id",
+    "project_id",
+    "attempt",
+    "invocation",
+    "contract",
+    "run",
+    "raw_response",
+    "normalized_submission",
+    "proposals",
+    "declared_executor",
+    "canonical_authority",
+    "semantic_evidence",
+    "executor_attribution_verified",
+    "model_authenticity_verified",
+    "human_approval_verified",
+    "task_completion_claimed"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "profile": {
+      "const": "project-system-execution-content-link-test-v1"
+    },
+    "link_id": {
+      "type": "string",
+      "pattern": "^XLINK-[0-9a-f]{32}$"
+    },
+    "project_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "maxLength": 128
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "schema_version",
+        "prepared_sha256",
+        "contract_sha256",
+        "dispatch_intent_sha256",
+        "authorization_sha256"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^ATTEMPT-[0-9a-f]{32}$"
+        },
+        "schema_version": {
+          "type": "integer",
+          "const": 4
+        },
+        "prepared_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "contract_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "dispatch_intent_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "authorization_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        }
+      }
+    },
+    "invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "terminal_sha256"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^XINV-[0-9a-f]{32}$"
+        },
+        "terminal_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        }
+      }
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sha256"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^XCON-[0-9a-f]{32}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sha256"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^XRUN-[0-9a-f]{32}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        }
+      }
+    },
+    "raw_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "bytes"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        }
+      }
+    },
+    "normalized_submission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "bytes",
+        "proposals",
+        "proposal_manifest_sha256"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2097152
+        },
+        "proposals": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "proposal_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        }
+      }
+    },
+    "proposals": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "sha256"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^PROP-[0-9a-f]{32}$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "minLength": 64,
+            "maxLength": 64
+          }
+        }
+      }
+    },
+    "declared_executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "provider",
+        "model",
+        "instruction_sha256"
+      ],
+      "properties": {
+        "kind": {
+          "const": "ai"
+        },
+        "provider": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "instruction_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        }
+      }
+    },
+    "canonical_authority": {
+      "type": "boolean",
+      "const": false
+    },
+    "semantic_evidence": {
+      "type": "boolean",
+      "const": false
+    },
+    "executor_attribution_verified": {
+      "type": "boolean",
+      "const": false
+    },
+    "model_authenticity_verified": {
+      "type": "boolean",
+      "const": false
+    },
+    "human_approval_verified": {
+      "type": "boolean",
+      "const": false
+    },
+    "task_completion_claimed": {
+      "type": "boolean",
+      "const": false
+    }
+  }
+}

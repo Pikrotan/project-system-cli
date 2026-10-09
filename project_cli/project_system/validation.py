@@ -16,6 +16,7 @@ from .intake_layer import inspect_intake_layer
 from .representation_layer import inspect_representation_layer
 from .extraction_layer import inspect_extraction_layer
 from .execution_attempt import inspect_execution_layer
+from .execution_link import inspect_execution_link_layer
 from .rules import inspect_rules_layer, validate_rule_references
 from .process_runner import run_process
 from .rule_engine import (
@@ -202,6 +203,7 @@ def validate_report(
     issues.extend(representation_layer.issues)
     issues.extend(inspect_extraction_layer(root,cfg,representation_layer).issues)
     issues.extend(inspect_execution_layer(root,cfg).issues)
+    issues.extend(inspect_execution_link_layer(root,cfg))
     issues.extend(inspect_skill_layer(root,cfg).issues)
     rule_layer=inspect_rules_layer(root,cfg)
     issues.extend(rule_layer.issues)

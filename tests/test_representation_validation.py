@@ -83,7 +83,7 @@ def test_project_init_creates_current_known_intake_directories(tmp_path):
     root = init_project('Demo', tmp_path / 'project')
     assert (root / 'intake/representations/.gitkeep').read_bytes() == b''
     assert sorted(path.name for path in (root / 'intake').iterdir()) == [
-        'executions', 'extraction-contracts', 'extraction-runs', 'extraction-submissions',
+        'execution-links', 'executions', 'extraction-contracts', 'extraction-runs', 'extraction-submissions',
         'proposals', 'representations']
 
 

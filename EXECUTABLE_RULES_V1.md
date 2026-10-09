@@ -2770,6 +2770,123 @@ defense against wholesale hostile rewriting/deletion of all metadata is claimed.
 B2 introduces no XRUN link, B3, real provider/network execution, model authenticity,
 human approval, semantic Evidence, task completion or canonical knowledge writes.
 
+### Stage 13B2b2-B3: test-only verifiable XRUN content link
+
+B3 is test-only and grants no production authorization or semantic authority.
+Package version stays 0.12.1. Published execution profiles v1/v2/v3, the old
+deterministic-fake response, XCON/XPACK/XRUN/PROP identities and normalization
+remain unchanged. There is no network/provider, automatic XRUN creation,
+canonical mutation, human approval or task-completion mechanism.
+
+#### Explicit synthetic fixture version
+
+An explicitly selected attempt v4 uses execution-attempt-v4.schema.json and
+project-system-execution-attempt-test-v4, the existing three-slot v2/v3 layout,
+adapter deterministic-extraction-fixture version 1, model synthetic-not-ai,
+local_fake mode, destination none and explicit sealed_local retention.
+The default attempt version remains v1. Embedded XINV v3 has profile
+project-system-execution-invocation-test-v3 and fixture_success observation,
+not the published fake_success protocol. Limits and exact Python integer
+checks remain mandatory. Explicit abandonment, unique terminal outcome,
+process-local test authorization and no retry after intent are unchanged.
+
+The separate pinned fixture independently validates XCON/REP/SEG through the
+existing extraction layer. It emits one bounded Extraction Submission v1:
+the first permitted kind and first presented SEG, ambiguous support and an
+explicit SYNTHETIC TEST FIXTURE statement denying truth/AI/approval authority.
+Pretty JSON deliberately distinguishes raw bytes from normalized bytes.
+Dispatch validates observed SHA-256/count against the fixed fixture protocol;
+there is no caller-supplied output sealing authority. Raw retention and reads
+reuse all B2 protection, path, no-clobber and verification boundaries.
+
+XRUN is produced separately through the existing extraction sealer. Its
+required executor.kind=ai is only a declared identity, never authenticated.
+The fixture executor does not create XRUN. Tests use explicitly synthetic,
+unverified declared executor labels and the same trusted instruction hash.
+XLINK always asserts executor_attribution_verified=false; it does not transform
+the fixture into genuine AI execution.
+
+#### XLINK v1 identity and ownership
+
+The optional namespace intake/execution-links is centrally registered and
+initialized with .gitkeep; legacy projects without it remain valid.
+Only strict execution-link.schema.json receipts are allowed:
+
+    intake/execution-links/XLINK-<32 lowercase hex>.json
+
+Each receipt binds project, ATTEMPT ID/version, full PREPARED and intent file
+hashes, execution-contract and test-authorization commitments, embedded XINV ID
+and full terminal file hash, XCON ID/full receipt hash, XRUN ID/full receipt hash,
+raw SHA-256/count, normalized SHA-256/count/proposal count/manifest hash, ordered
+PROP IDs/full receipt hashes and declared executor metadata. It contains no raw
+or normalized submission body. Schema/version/count fields require exact
+Python integers, not integral floats or coercion. The maximum receipt is 64 KiB.
+
+Identity is SHA-256 of the domain bytes
+project-system-execution-content-link-test-v1 followed by NUL and canonical JSON
+of the FULL receipt excluding only link_id. XLINK uses the first 32 lowercase
+hex characters. False immutable claims are canonical_authority,
+semantic_evidence, executor_attribution_verified, model_authenticity_verified,
+human_approval_verified and task_completion_claimed.
+
+At most one accepted link belongs to an ATTEMPT. Cooperating publishers reuse
+the existing crash-released, nonblocking intake OS mutex in
+.generated/sync/.intake.lock. Full inventory/owner inspection and publication
+are inside this mutex; contention fails closed, never retries execution.
+Any existing owner, even identical, rejects another publication. Independent
+inspection rejects duplicate owners, unknown files, orphan links and invalid
+bindings. There is no separate durable owner slot or deletion-based recovery.
+
+Validated complete bytes are staged under .generated/execution-link-staging,
+flushed/file-fsynced and atomically hard-linked without replacement. No rename,
+replace/copy fallback or overwrite is allowed. Normal failure removes only
+the invocation's temporary file. A process crash before publication leaves only
+disposable staging, not an accepted link; after publication a complete link can
+be independently verified. The OS mutex is crash released. Unsupported or
+cross-device links fail closed. File fsync is not proof of universal power-loss
+directory-entry durability.
+
+#### Independent proof and current reproducibility
+
+Initial publication requires valid complete v4 ATTEMPT/XINV history and a
+successfully sealed, locally AVAILABLE response. The B2 verified reader safely
+rereads exact raw bytes. The existing extractor independently validates XCON,
+REP/SEG, XRUN and associated PROP receipts. Existing normalize_submission runs
+on ACTUAL raw bytes against that XCON; normalized SHA/count/proposal count/
+manifest and reconstructed PROP identities/order/records must exactly match
+XRUN and PROP. Project, XCON, instruction and full receipt commitments also
+match. Matching asserted hashes alone cannot authorize initial publication.
+No referenced receipt is changed by link creation or inspection.
+
+Independent inspection schema/type/identity-checks the complete XLINK, repeats
+the structural chain and compares every committed field. With valid present
+payload it rereads and renormalizes the bytes again (AVAILABLE). If local bytes
+are missing after Git transfer, structural integrity remains inspectable but
+reproducibility is UNAVAILABLE with WARNING; normalization is not claimed to
+have been re-proved from missing bytes. Initial creation with missing bytes
+still fails. Present corrupt, substituted, symlink/reparse or otherwise unsafe
+payloads produce ERROR, never an unavailable-but-valid result.
+
+The existing trusted-ancestor/immutable-receipt/cooperative-writer threat model
+still applies. This is not an OS sandbox, signed attestation, protection against
+hostile deletion/wholesale rehashing of all metadata, or proof of semantic truth.
+Batch XLINK validation inventories once and privately reuses one freshly
+validated extraction layer, including nested v4 fixture commitment checks.
+The execution-layer v4 batch independently does the same; v1/v2/v3 do not use
+shared extraction provenance. Reuse is invocation/context-local, never persisted
+or supplied by callers. Exact stable-file fingerprints of project.yaml, sources
+and intake before validation and at batch exit reject changed inputs before
+results return (and before link publication). Every link/checkpoint/receipt/raw
+response is still independently reread; actual response normalization repeats
+per link. Public single-link inspection always opens a fresh scope. Failed scans
+remain failed within that invocation; later calls validate afresh. These guards
+are additional bounded read passes, not an OS-level filesystem snapshot or a
+transaction against hostile concurrent replacement.
+The globally shared intake mutex is intentionally conservative; unrelated intake
+can contend. Local byte retention remains unencrypted and explicitly protected
+by B2 ignore conventions, not access control. GC, production execution,
+authentic AI attribution and governed human review/apply remain out of scope.
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.

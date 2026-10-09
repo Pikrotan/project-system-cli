@@ -18,7 +18,7 @@ import secrets
 import stat
 import tempfile
 
-from . import execution_fake, execution_storage
+from . import execution_fake, execution_storage, execution_fixture
 from .extraction_layer import _schema, _strict_json, validate_contract
 from .extraction_pack import (
     MAX_PACK_CANONICAL_BYTES, _pack_path, _read_exact, _strict_pack_json,
@@ -37,6 +37,9 @@ XINV_PROFILE = 'project-system-execution-invocation-test-v1'
 PROFILE_V3 = 'project-system-execution-attempt-test-v3'
 SCHEMA_V3 = 'execution-attempt-v3.schema.json'
 XINV_PROFILE_V2 = 'project-system-execution-invocation-test-v2'
+PROFILE_V4 = 'project-system-execution-attempt-test-v4'
+SCHEMA_V4 = 'execution-attempt-v4.schema.json'
+XINV_PROFILE_V3 = 'project-system-execution-invocation-test-v3'
 ATTEMPT_RE = re.compile(r'ATTEMPT-[0-9a-f]{32}')
 MAX_CHECKPOINT_BYTES = 64 * 1024
 MAX_INSTRUCTION_BYTES = 64 * 1024
@@ -106,9 +109,10 @@ def _commitments(root, pack_id):
 
 
 def _profile(version):
-    if type(version) is not int or version not in (1, 2, 3):
+    if type(version) is not int or version not in (1, 2, 3, 4):
         raise AttemptError('unsupported execution schema version')
-    return {1: (PROFILE, SCHEMA), 2: (PROFILE_V2, SCHEMA_V2), 3: (PROFILE_V3, SCHEMA_V3)}[version]
+    return {1: (PROFILE, SCHEMA), 2: (PROFILE_V2, SCHEMA_V2),
+            3: (PROFILE_V3, SCHEMA_V3), 4: (PROFILE_V4, SCHEMA_V4)}[version]
 
 
 def _checkpoint(contract, state, previous, data, *, schema_version=1):
@@ -298,7 +302,7 @@ the XPACK ID here; exact bytes and published verifier are required before dispat
             if state != 'DISPATCH_INTENT' or doc['state'] not in terminal_states:
                 raise AttemptError('illegal terminal transition')
             if version >= 2:
-                _verify_xinv(doc, prepared, documents[slots[1]])
+                _verify_xinv(doc, prepared, documents[slots[1]], root=root)
             elif doc['data']['outcome'] != 'unresolved':
                 raise AttemptError('unknown delivery can only be closed unresolved')
         state = doc['state']
@@ -309,7 +313,7 @@ the XPACK ID here; exact bytes and published verifier are required before dispat
     elif state == 'DISPATCH_INTENT':
         state = 'DELIVERY_UNKNOWN'
     payload_status, payload = 'NOT_RETAINED', None
-    if version == 3:
+    if version in (3, 4):
         if state == 'RESPONSE_RECORDED':
             payload = documents[slots[2]]['data']['xinv']['sealed_payload']
         payload_status = execution_storage.inspect_payload(root, attempt_id, payload)
@@ -331,6 +335,16 @@ class ExecutionLayer:
 
 def inspect_execution_layer(root, config):
     """Optional namespace. Corrupt=ERROR; valid incomplete=BLOCKING; terminal=WARNING."""
+    try:
+        # Only v4 fixture checks request shared layers; v1/v2/v3 stay unchanged.
+        with execution_fixture._validation_batch(root, guard_links=False):
+            return _inspect_execution_layer(root, config)
+    except (SourceError, OSError, ValueError, TypeError):
+        return ExecutionLayer({}, (('ERROR', 'intake/executions',
+                                   'execution validation inputs changed or are unsafe'),))
+
+
+def _inspect_execution_layer(root, config):
     attempts, issues = {}, []
     try:
         directory = intake_path(root, 'intake/executions')
@@ -374,8 +388,8 @@ def prepare_attempt(root, pack_id, instruction, *, options=None,
                     retention=_DEFAULT_RETENTION, limits=None, schema_version=1):
     _profile(schema_version)
     if retention is _DEFAULT_RETENTION:
-        if schema_version == 3:
-            raise AttemptError('v3 requires an explicit retention policy')
+        if schema_version in (3, 4):
+            raise AttemptError(f'v{schema_version} requires an explicit retention policy')
         retention = 'metadata_only'
     if not isinstance(instruction, bytes) or not 0 < len(instruction) <= MAX_INSTRUCTION_BYTES:
         raise AttemptError('test instruction must be bounded nonempty bytes')
@@ -400,7 +414,7 @@ def prepare_attempt(root, pack_id, instruction, *, options=None,
             raise AttemptError('execution limits must be integers')
     if contract['pack_bytes'] > contract['limits']['max_pack_bytes']:
         raise AttemptError('execution pack exceeds authorized byte limit')
-    if schema_version == 3 and retention == 'sealed_local':
+    if schema_version in (3, 4) and retention == 'sealed_local':
         execution_storage.require_protection(root)
     _publish(root, contract['attempt_id'], SLOTS[0], doc)
     return inspect_attempt(root, contract['attempt_id'])
@@ -465,31 +479,40 @@ def _xinv(contract, prepared_sha, intent_sha, authorization, observation, respon
         'model_authenticity_verified': False, 'human_approval_verified': False,
         'task_completion_claimed': False, 'response_bytes_available': False,
     }
-    if schema_version == 3:
+    if schema_version in (3, 4):
         record.update(schema_version=2, profile=XINV_PROFILE_V2, retention=contract['retention'])
         del record['response_bytes_available']
         record['sealed_payload'] = (
             {'path': execution_storage.payload_relative(contract['attempt_id']), **response}
             if response is not None and contract['retention'] == 'sealed_local' else None)
+        if schema_version == 4:
+            record.update(schema_version=3, profile=XINV_PROFILE_V3)
     record['invocation_id'] = 'XINV-' + _digest(record)[:32]
     return record
 
 
-def _verify_xinv(document, prepared, intent):
+def _response_commitment(root, contract, version):
+    if version == 4:
+        return execution_fixture.response_commitment(root, contract['contract_id'])
+    return execution_fake.response_commitment()
+
+
+def _verify_xinv(document, prepared, intent, *, root=None):
     record = document['data']['xinv']
     contract = prepared['data']['contract']
     observation = record['observation']
     expected_response = None
     scenario = contract['options']['scenario']
     if document['state'] == 'RESPONSE_RECORDED':
-        if scenario != 'success' or observation != 'fake_success':
+        success = 'fixture_success' if prepared['schema_version'] == 4 else 'fake_success'
+        if scenario != 'success' or observation != success:
             raise AttemptError('XINV fake response protocol mismatch')
-        expected_response = execution_fake.response_commitment()
+        expected_response = _response_commitment(root, contract, prepared['schema_version'])
         if expected_response['bytes'] > contract['limits']['max_response_bytes']:
             raise AttemptError('XINV response exceeds authorized limit')
     elif observation != 'operator_unresolved':
         expected = scenario
-        if scenario == 'success' and execution_fake.response_commitment()['bytes'] > contract['limits']['max_response_bytes']:
+        if scenario == 'success' and _response_commitment(root, contract, prepared['schema_version'])['bytes'] > contract['limits']['max_response_bytes']:
             expected = 'malformed_response'
         if expected not in {'after_intent', 'timeout', 'unknown_delivery', 'malformed_response'} or observation != expected:
             raise AttemptError('XINV unresolved protocol mismatch')
@@ -506,7 +529,7 @@ def dispatch_attempt(root, attempt_id, capability):
     authorization = _authorization(result, capability)
     if result.state != 'PREPARED':
         raise AttemptError('dispatch boundary already exists; no redispatch')
-    if result.schema_version == 3 and result.contract['retention'] == 'sealed_local':
+    if result.schema_version in (3, 4) and result.contract['retention'] == 'sealed_local':
         execution_storage.require_protection(root)
     actual = _commitments(root, result.contract['pack_id'])
     if any(result.contract[key] != value for key, value in actual.items()):
@@ -519,9 +542,11 @@ def dispatch_attempt(root, attempt_id, capability):
     _publish(root, attempt_id, SLOTS[1], intent)
     _boundary('after_dispatch_intent')
     # No caller-supplied executor. This module is the sole fake-only dispatch route.
-    observation = 'fake_success'
+    success = 'fixture_success' if result.schema_version == 4 else 'fake_success'
+    observation = success
     try:
-        response = execution_fake.dispatch(result.contract)
+        response = (execution_fixture.dispatch(root, result.contract) if result.schema_version == 4
+                    else execution_fake.dispatch(result.contract))
         observed_digest = None
         if result.schema_version >= 2:
             scenario = result.contract['options']['scenario']
@@ -529,7 +554,7 @@ def dispatch_attempt(root, attempt_id, capability):
                 if type(response) is not bytes:
                     raise AttemptError('unrecognized fake response; delivery unknown')
                 observed_digest = {'sha256': sha256(response).hexdigest(), 'bytes': len(response)}
-                if observed_digest != execution_fake.response_commitment():
+                if observed_digest != _response_commitment(root, result.contract, result.schema_version):
                     raise AttemptError('unrecognized fake response; delivery unknown')
             elif scenario != 'malformed_response' or response is not None:
                 raise AttemptError('unrecognized fake observation; delivery unknown')
@@ -544,16 +569,16 @@ def dispatch_attempt(root, attempt_id, capability):
                                           or observation not in {'after_intent', 'timeout', 'unknown_delivery'}):
             raise AttemptError('unrecognized fake transport result; delivery unknown') from exc
     if result.schema_version >= 2:
-        response_digest = observed_digest if observation == 'fake_success' else None
+        response_digest = observed_digest if observation == success else None
         state = 'RESPONSE_RECORDED' if response_digest is not None else 'UNRESOLVED'
         record = _xinv(result.contract, result.prepared_sha256, intent['checkpoint_sha256'],
                        authorization, observation, response_digest, schema_version=result.schema_version)
-        if result.schema_version == 3 and record['sealed_payload'] is not None:
+        if result.schema_version in (3, 4) and record['sealed_payload'] is not None:
             execution_storage._publish_payload(root, attempt_id, response, record['sealed_payload'], _boundary)
         outcome = _checkpoint(result.contract, state, intent['checkpoint_sha256'],
                               {'authorization': authorization, 'xinv': record}, schema_version=result.schema_version)
         prepared = _read_checkpoint(_path(root, attempt_id, SLOTS[0]))
-        _verify_xinv(outcome, prepared, intent)
+        _verify_xinv(outcome, prepared, intent, root=root)
         _publish(root, attempt_id, SLOTS_V2[2], outcome)
     # V1 preserves its published ephemeral-observation / unknown-delivery meaning.
     final = inspect_attempt(root, attempt_id)
@@ -588,7 +613,7 @@ def close_test_attempt(root, attempt_id, capability, *, outcome):
 def read_response(root, attempt_id):
     """Return bounded untrusted bytes only after independent provenance and byte checks."""
     result = inspect_attempt(root, attempt_id)
-    if (result.schema_version != 3 or result.state != 'RESPONSE_RECORDED'
+    if (result.schema_version not in (3, 4) or result.state != 'RESPONSE_RECORDED'
             or result.payload_status != 'AVAILABLE' or result.sealed_payload is None):
         raise AttemptError('verified sealed response is not locally available')
     return execution_storage._read_verified_payload_bytes(root, attempt_id, result.sealed_payload)

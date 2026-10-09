@@ -149,8 +149,8 @@ def inspect_local_orphans(root, attempts):
                 if not stat.S_ISDIR(os.lstat(safe).st_mode):
                     raise PayloadError('unsafe local execution storage entry')
                 known = attempts.get(child.name)
-                if known is not None and known.schema_version == 3:
-                    continue  # Independently inspected with its exact v3 history.
+                if known is not None and known.schema_version in (3, 4):
+                    continue  # Independently inspected with its exact versioned history.
                 status = inspect_payload(root, child.name)
                 if status == 'UNSAFE':
                     issues.append(('ERROR', rel, 'PAYLOAD_UNSAFE; no valid referencing execution'))

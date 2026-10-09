@@ -2435,6 +2435,141 @@ separately verifiable, explicitly authorized execution-provenance link without
 changing published XRUN identity. This Stage 13B2b1 candidate does not implement
 that link, self-approve Stage 13B2b1, or complete Stage 13B2/Stage 13.
 
+### Stage 13B2b2-A candidate: execution contract and crash safety
+
+This optional foundation follows the published Stage 13B2b1 XPACK contract.
+It is a candidate for independent review, not acceptance of Stage 13B2b2 or
+completion of Stage 13. Package version stays 0.12.1. There is no XINV, response
+sealing, XRUN integration, real provider, local model, network request, CLI
+execution command or canonical write. The bounded Python API is test-only.
+
+The central intake owner registers `intake/executions/`; initialization creates
+its empty `.gitkeep`, and absent execution namespaces remain valid for legacy
+projects. Only this execution layer inspects the attempt children. Existing
+SRC/CAP/REP/SEG/XCON/XPACK/XRUN/PROP schemas, identities and normalization are
+unchanged. New modules and the strict `execution-attempt.schema.json` use existing
+package/module discovery and recursive packaged schema assets.
+
+#### Attempt and exact authorization contract
+
+Each invocation of `prepare_attempt` creates `ATTEMPT-<32 lowercase hex>` using
+128 bits of cryptographically secure randomness, not a hash of shared inputs.
+Collisions never authorize replacement. Each attempt has its own directory:
+
+```text
+intake/executions/ATTEMPT-.../
+  01-prepared.json       PREPARED
+  02-boundary.json       DISPATCH_INTENT or DISPOSITION(abandoned)
+  03-disposition.json    optional DISPOSITION(unresolved), only after intent
+```
+
+Checkpoints are strict canonical UTF-8 JSON, at most 64 KiB, with schema/profile,
+project/attempt identity, state, full previous-checkpoint SHA-256 and full
+checkpoint SHA-256 (the existing canonical JSON serialization, excluding only
+the checkpoint's own digest). They are monotonic immutable files; even identical
+existing bytes are a conflict, never a newly acquired dispatch claim.
+
+PREPARED binds project/attempt, exact XCON ID and SHA-256 of the entire durable
+XCON receipt, exact XPACK ID and full canonical byte SHA-256/count, trusted
+instruction SHA-256/count, adapter ID/version, model, options, execution mode,
+destination, limits, retention and extraction-only scope. No raw instructions,
+source segments or pack text are retained in execution metadata. The caller of
+this test API supplies trusted instruction bytes; no project/source instruction
+is promoted to trusted authority. Every field is inside the contract commitment.
+
+Only adapter `deterministic-fake` version `1`, model `fake`, mode `local_fake`,
+destination `none`, retention `metadata_only` and scope `extraction_only` are
+allowed. Limits are bounded to 2 MiB pack, 64 KiB response/instruction and 30
+seconds declared timeout. Fake timeout is simulated without a wait; these limits
+do not certify a future provider's timeout implementation. Unknown options and
+any local-to-remote escalation are rejected before durable publication.
+
+`authorize_test_attempt` requires an explicit expected full contract digest and
+independent revalidation. It issues an in-memory process-local HMAC capability
+bound to that exact contract (including unique attempt). A fresh process must
+explicitly reauthorize. Caller `approved=true`, a dict or executor assertion is
+not a capability. Changed parameters cannot reuse one. The sole dispatch route
+uses the fixed fake adapter, never a caller-supplied provider. Durable intent
+records `kind=test_only`, the contract digest and authorization-record digest.
+Independent validation verifies those commitments, not production human approval
+or authenticity against a malicious party capable of recomputing all receipts.
+This is expressly **test harness authorization**, not a human approval engine.
+Trustworthy production authorization remains unresolved for a subsequent stage.
+
+#### Publication, concurrency and threat model
+
+Completed bytes are flushed/fsynced in a unique temporary regular file under
+`.generated/execution-staging/` on the destination filesystem; publication uses
+`os.link` atomically without clobber, followed by safe independent reread. No
+`replace`, check-then-overwrite or copy fallback is permitted. Unsupported links,
+including cross-device publication, fail closed before transport. Only the
+creator of `02-boundary.json` may invoke transport. An existing boundary, even
+identical, never permits redispatch. Concurrent abandon/dispatch operations use
+the same slot so both cannot win. After intent, an explicit unresolved disposition
+may be appended; it never asserts transport cancellation or response success.
+
+Existing lexical path inspection and bounded stable-file reads reject traversal,
+symlinks, Windows reparse points, nonregular artifacts and conflicting receipts.
+The model covers cooperative processes and process crashes on a filesystem with
+atomic hard links, with trusted root/ancestor directories and no hostile removal
+or rewrite of published checkpoints. It is not an OS sandbox, remote transaction,
+or protection against a malicious same-user filesystem writer. In particular,
+deleting a dispatch claim defeats its history; hashes do not prevent deliberate
+wholesale metadata replacement. Windows is a required target: NTFS hard-link
+claims and process-crash tests must run on the actual test volume; other volumes
+need their own verification. File fsync does **not** establish universal
+directory-entry durability across power loss. Orphan temporary files after a
+hard process crash are disposable generated state, never execution Evidence.
+
+#### Independent recovery and terminal policy
+
+`inspect_attempt` independently checks strict schema, exact paths/types,
+checkpoint hashes, project/attempt bindings, full XCON bytes and published XCON
+validation, contract/authorization commitments and legal predecessor/state links.
+The persisted XPACK digest/ID binding is checked without requiring disposable
+caches. Dispatch separately rereads and independently verifies exact XPACK bytes
+and the published XPACK/XCON/REP/SEG bindings immediately before acquiring intent.
+
+| Durable state | Recovery | Explicit permitted action |
+|---|---|---|
+| PREPARED | Valid but incomplete; no automatic dispatch | Revalidate and explicitly test-authorize; dispatch or append abandoned |
+| DISPATCH_INTENT, no recorded response | Delivery unknown, even if fake success was observed | Never retry this attempt; explicitly append unresolved |
+| DISPOSITION abandoned | Terminal provenance, no semantic Evidence | No dispatch and no checkpoint rewrite |
+| DISPOSITION unresolved | Terminal provenance, no semantic Evidence | No retry and no checkpoint rewrite |
+| Empty ATTEMPT directory, no PREPARED | Diagnosed orphan; ERROR, execution history unverified | Explicit operator intervention; no automatic recovery, dispatch or cleanup |
+| Missing initial/required predecessor, corrupt/conflicting/unexpected artifact | Invalid, fail closed | Report; never fabricate recovery or delete receipts to pass |
+
+An interruption after directory creation but before atomic PREPARED publication
+can leave an empty durable attempt directory and an orphan generated staging file.
+Independent inspection explicitly diagnoses that empty directory as an orphan
+requiring operator intervention, not a valid interrupted PREPARED attempt and not
+semantic Evidence. Neither execution nor nonexecution is inferred from absent
+receipts: a benign pre-publication crash cannot be distinguished from deletion of
+earlier checkpoints. Authorization, dispatch and terminal closure all fail closed.
+Nonempty directories without PREPARED remain invalid; unknown artifacts remain
+rejected. Generated temporary bytes are never promoted to a durable checkpoint.
+Stage A supplies no automatic cleanup, reconstruction or retry mechanism. Operator
+intervention must review/preserve the artifacts and authorize any separate bounded
+remediation; it does not mean deleting or overwriting receipts to pass validation.
+The checkpoint layout and publication algorithm are unchanged.
+
+RESPONSE_RECORDED and response sealing are deferred to Stage B. Stage A retains
+no response bytes/hash receipt and never claims byte replay or extraction success.
+Fake observations exist only in the caller's transient report. Success, pre-intent
+failure, post-intent failure, timeout, unknown delivery, malformed response and
+interruption after observation exercise orchestration only. No source is sent or
+semantically processed by the fake transport. Fault-injection seams are for tests,
+not caller authorization extensions.
+
+Project validation reports valid incomplete attempts as BLOCKING, malformed
+attempts as ERROR and explicit terminal abandoned/unresolved as WARNING. Existing
+task-completion validation therefore cannot silently pass an unfinished attempt.
+Terminal records are also never accepted as successful extraction/task Evidence.
+`close_test_attempt` is narrowly test-only terminal provenance, not another generic
+approval/task lifecycle. A new execution after unknown delivery, if ever allowed
+in a later production stage, must be a distinct explicitly authorized attempt and
+must not imply that remote duplication is impossible.
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.

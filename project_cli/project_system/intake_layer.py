@@ -14,6 +14,7 @@ KNOWN_INTAKE_DIRECTORIES = (
     'extraction-runs',
     'proposals',
     'extraction-submissions',
+    'executions',
 )
 
 

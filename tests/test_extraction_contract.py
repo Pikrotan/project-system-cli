@@ -43,7 +43,7 @@ def test_extraction_contract_module_and_profile_exist():
 def test_central_intake_namespace_knows_stage13b2a_roots():
     assert KNOWN_INTAKE_DIRECTORIES == (
         'representations', 'extraction-contracts', 'extraction-runs',
-        'proposals', 'extraction-submissions')
+        'proposals', 'extraction-submissions', 'executions')
 
 
 def test_known_intake_siblings_and_stage13b1_only_project_validate(tmp_path):

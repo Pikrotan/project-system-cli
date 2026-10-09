@@ -18,7 +18,7 @@ import secrets
 import stat
 import tempfile
 
-from . import execution_fake
+from . import execution_fake, execution_storage
 from .extraction_layer import _schema, _strict_json, validate_contract
 from .extraction_pack import (
     MAX_PACK_CANONICAL_BYTES, _pack_path, _read_exact, _strict_pack_json,
@@ -34,12 +34,16 @@ SCHEMA = 'execution-attempt.schema.json'
 PROFILE_V2 = 'project-system-execution-attempt-test-v2'
 SCHEMA_V2 = 'execution-attempt-v2.schema.json'
 XINV_PROFILE = 'project-system-execution-invocation-test-v1'
+PROFILE_V3 = 'project-system-execution-attempt-test-v3'
+SCHEMA_V3 = 'execution-attempt-v3.schema.json'
+XINV_PROFILE_V2 = 'project-system-execution-invocation-test-v2'
 ATTEMPT_RE = re.compile(r'ATTEMPT-[0-9a-f]{32}')
 MAX_CHECKPOINT_BYTES = 64 * 1024
 MAX_INSTRUCTION_BYTES = 64 * 1024
 SLOTS = ('01-prepared.json', '02-boundary.json', '03-disposition.json')
 SLOTS_V2 = ('01-prepared.json', '02-boundary.json', '03-outcome.json')
 _TEST_ISSUER_KEY = secrets.token_bytes(32)
+_DEFAULT_RETENTION = object()
 
 
 class AttemptError(SourceError):
@@ -57,6 +61,8 @@ def _controlled(function):
             return function(*args, **kwargs)
         except AttemptError:
             raise
+        except execution_storage.PayloadError as exc:
+            raise AttemptError(str(exc)) from exc
         except (SourceError, OSError, ValueError, TypeError, KeyError,
                 AttributeError, RecursionError, NotImplementedError) as exc:
             raise AttemptError('execution attempt cannot complete safely') from exc
@@ -100,9 +106,9 @@ def _commitments(root, pack_id):
 
 
 def _profile(version):
-    if type(version) is not int or version not in (1, 2):
+    if type(version) is not int or version not in (1, 2, 3):
         raise AttemptError('unsupported execution schema version')
-    return (PROFILE, SCHEMA) if version == 1 else (PROFILE_V2, SCHEMA_V2)
+    return {1: (PROFILE, SCHEMA), 2: (PROFILE_V2, SCHEMA_V2), 3: (PROFILE_V3, SCHEMA_V3)}[version]
 
 
 def _checkpoint(contract, state, previous, data, *, schema_version=1):
@@ -140,7 +146,7 @@ def _parse_checkpoint(raw):
         raise AttemptError('invalid execution schema version')
     # V1 keeps its published read/schema boundary; inspect_attempt independently
     # enforces exact integers there. V2 also rejects them before publication.
-    if document['schema_version'] == 2 and document['state'] == 'PREPARED':
+    if document['schema_version'] >= 2 and document['state'] == 'PREPARED':
         contract = document['data']['contract']
         for field in ('pack_bytes', 'instruction_bytes'):
             if type(contract[field]) is not int:
@@ -153,6 +159,8 @@ def _parse_checkpoint(raw):
             raise AttemptError('invalid XINV schema version')
         if xinv['response'] is not None and type(xinv['response']['bytes']) is not int:
             raise AttemptError('XINV response bytes must be an integer')
+        if xinv.get('sealed_payload') is not None and type(xinv['sealed_payload']['bytes']) is not int:
+            raise AttemptError('XINV sealed payload bytes must be an integer')
     return document
 
 
@@ -205,6 +213,8 @@ class AttemptState:
     response_bytes_available: bool = False
     schema_version: int = 1
     prepared_sha256: str = None
+    payload_status: str = 'NOT_RETAINED'
+    sealed_payload: dict = None
 
 
 @_controlled
@@ -275,7 +285,7 @@ the XPACK ID here; exact bytes and published verifier are required before dispat
         if name != SLOTS[0]:
             authorization = doc['data']['authorization']
             expected = _authorization_record(contract_sha, prepared['checkpoint_sha256']
-                                             if version == 2 else None)
+                                             if version >= 2 else None)
             if authorization != expected:
                 raise AttemptError('test authorization commitment mismatch')
         if name == SLOTS[1]:
@@ -287,7 +297,7 @@ the XPACK ID here; exact bytes and published verifier are required before dispat
             terminal_states = {'DISPOSITION'} if version == 1 else {'RESPONSE_RECORDED', 'UNRESOLVED'}
             if state != 'DISPATCH_INTENT' or doc['state'] not in terminal_states:
                 raise AttemptError('illegal terminal transition')
-            if version == 2:
+            if version >= 2:
                 _verify_xinv(doc, prepared, documents[slots[1]])
             elif doc['data']['outcome'] != 'unresolved':
                 raise AttemptError('unknown delivery can only be closed unresolved')
@@ -298,9 +308,19 @@ the XPACK ID here; exact bytes and published verifier are required before dispat
         state = last['data']['outcome'].upper()
     elif state == 'DISPATCH_INTENT':
         state = 'DELIVERY_UNKNOWN'
+    payload_status, payload = 'NOT_RETAINED', None
+    if version == 3:
+        if state == 'RESPONSE_RECORDED':
+            payload = documents[slots[2]]['data']['xinv']['sealed_payload']
+        payload_status = execution_storage.inspect_payload(root, attempt_id, payload)
+        if payload_status == 'UNRESOLVED' and (contract['retention'] == 'metadata_only'
+                                               or state in {'PREPARED', 'ABANDONED'}):
+            payload_status = 'NOT_RETAINED'
     return AttemptState(attempt_id, state, contract, previous,
                         state in {'ABANDONED', 'UNRESOLVED', 'RESPONSE_RECORDED'},
-                        schema_version=version, prepared_sha256=prepared['checkpoint_sha256'])
+                        response_bytes_available=payload_status == 'AVAILABLE',
+                        schema_version=version, prepared_sha256=prepared['checkpoint_sha256'],
+                        payload_status=payload_status, sealed_payload=payload)
 
 
 @dataclass(frozen=True)
@@ -317,7 +337,7 @@ def inspect_execution_layer(root, config):
         try:
             info = os.lstat(directory)
         except FileNotFoundError:
-            return ExecutionLayer({}, ())
+            return ExecutionLayer({}, execution_storage.inspect_local_orphans(root, {}))
         if not stat.S_ISDIR(info.st_mode):
             raise AttemptError('execution namespace is not a directory')
         project_identity(config)
@@ -333,12 +353,17 @@ def inspect_execution_layer(root, config):
                 attempts[child.name] = result
                 issues.append(('WARNING' if result.terminal else 'BLOCKING', relative,
                                'test-only attempt: ' + result.state + '; no semantic Evidence'))
+                if result.payload_status in {'MISSING', 'CORRUPT', 'UNSAFE', 'ORPHAN'}:
+                    severity = 'ERROR' if result.payload_status in {'CORRUPT', 'UNSAFE'} else 'WARNING'
+                    issues.append((severity, execution_storage.payload_relative(child.name),
+                                   'PAYLOAD_' + result.payload_status + '; immutable execution history unchanged'))
             except OrphanAttemptError as exc:
                 issues.append(('ERROR', relative, str(exc)))
             except (SourceError, OSError, ValueError, TypeError):
                 issues.append(('ERROR', relative, 'invalid execution attempt'))
     except (SourceError, OSError, ValueError, TypeError):
         issues.append(('ERROR', 'intake/executions', 'unsafe execution namespace'))
+    issues.extend(execution_storage.inspect_local_orphans(root, attempts))
     return ExecutionLayer(attempts, tuple(issues))
 
 
@@ -346,8 +371,12 @@ def inspect_execution_layer(root, config):
 def prepare_attempt(root, pack_id, instruction, *, options=None,
                     adapter='deterministic-fake', adapter_version='1', model='fake',
                     execution_mode='local_fake', allowed_destination='none',
-                    retention='metadata_only', limits=None, schema_version=1):
+                    retention=_DEFAULT_RETENTION, limits=None, schema_version=1):
     _profile(schema_version)
+    if retention is _DEFAULT_RETENTION:
+        if schema_version == 3:
+            raise AttemptError('v3 requires an explicit retention policy')
+        retention = 'metadata_only'
     if not isinstance(instruction, bytes) or not 0 < len(instruction) <= MAX_INSTRUCTION_BYTES:
         raise AttemptError('test instruction must be bounded nonempty bytes')
     contract = {
@@ -371,6 +400,8 @@ def prepare_attempt(root, pack_id, instruction, *, options=None,
             raise AttemptError('execution limits must be integers')
     if contract['pack_bytes'] > contract['limits']['max_pack_bytes']:
         raise AttemptError('execution pack exceeds authorized byte limit')
+    if schema_version == 3 and retention == 'sealed_local':
+        execution_storage.require_protection(root)
     _publish(root, contract['attempt_id'], SLOTS[0], doc)
     return inspect_attempt(root, contract['attempt_id'])
 
@@ -380,10 +411,12 @@ class _TestAuthorization:
     contract_sha256: str
     signature: str
     prepared_sha256: str = None
+    schema_version: int = 1
 
 
-def _signature(contract_sha, prepared_sha=None):
-    message = contract_sha if prepared_sha is None else PROFILE_V2 + ':' + contract_sha + ':' + prepared_sha
+def _signature(contract_sha, prepared_sha=None, schema_version=2):
+    profile, _ = _profile(schema_version)
+    message = contract_sha if prepared_sha is None else profile + ':' + contract_sha + ':' + prepared_sha
     return hmac.new(_TEST_ISSUER_KEY, message.encode('ascii'), 'sha256').hexdigest()
 
 
@@ -394,18 +427,20 @@ def authorize_test_attempt(root, attempt_id, *, expected_contract_sha256):
     digest = _digest(result.contract)
     if result.terminal or not isinstance(expected_contract_sha256, str) or digest != expected_contract_sha256:
         raise AttemptError('explicit test authorization binding mismatch')
-    prepared_sha = result.prepared_sha256 if result.schema_version == 2 else None
-    return _TestAuthorization(digest, _signature(digest, prepared_sha), prepared_sha)
+    prepared_sha = result.prepared_sha256 if result.schema_version >= 2 else None
+    return _TestAuthorization(digest, _signature(digest, prepared_sha, result.schema_version),
+                              prepared_sha, result.schema_version)
 
 
 def _authorization(result, capability):
     digest = _digest(result.contract)
-    prepared_sha = result.prepared_sha256 if result.schema_version == 2 else None
+    prepared_sha = result.prepared_sha256 if result.schema_version >= 2 else None
     if (type(capability) is not _TestAuthorization
             or not isinstance(capability.signature, str)
             or capability.contract_sha256 != digest
             or capability.prepared_sha256 != prepared_sha
-            or not hmac.compare_digest(capability.signature, _signature(digest, prepared_sha))):
+            or type(capability.schema_version) is not int or capability.schema_version != result.schema_version
+            or not hmac.compare_digest(capability.signature, _signature(digest, prepared_sha, result.schema_version))):
         raise AttemptError('fresh test-only authorization capability required')
     return _authorization_record(digest, prepared_sha)
 
@@ -418,7 +453,7 @@ def _authorization_record(digest, prepared_sha=None):
     return auth
 
 
-def _xinv(contract, prepared_sha, intent_sha, authorization, observation, response):
+def _xinv(contract, prepared_sha, intent_sha, authorization, observation, response, *, schema_version=2):
     record = {
         'schema_version': 1, 'profile': XINV_PROFILE,
         'project_id': contract['project_id'], 'attempt_id': contract['attempt_id'],
@@ -430,6 +465,12 @@ def _xinv(contract, prepared_sha, intent_sha, authorization, observation, respon
         'model_authenticity_verified': False, 'human_approval_verified': False,
         'task_completion_claimed': False, 'response_bytes_available': False,
     }
+    if schema_version == 3:
+        record.update(schema_version=2, profile=XINV_PROFILE_V2, retention=contract['retention'])
+        del record['response_bytes_available']
+        record['sealed_payload'] = (
+            {'path': execution_storage.payload_relative(contract['attempt_id']), **response}
+            if response is not None and contract['retention'] == 'sealed_local' else None)
     record['invocation_id'] = 'XINV-' + _digest(record)[:32]
     return record
 
@@ -453,7 +494,8 @@ def _verify_xinv(document, prepared, intent):
         if expected not in {'after_intent', 'timeout', 'unknown_delivery', 'malformed_response'} or observation != expected:
             raise AttemptError('XINV unresolved protocol mismatch')
     expected_record = _xinv(contract, prepared['checkpoint_sha256'], intent['checkpoint_sha256'],
-                            intent['data']['authorization'], observation, expected_response)
+                            intent['data']['authorization'], observation, expected_response,
+                            schema_version=prepared['schema_version'])
     if record != expected_record:
         raise AttemptError('XINV attempt/authorization/boundary/response commitment mismatch')
 
@@ -464,6 +506,8 @@ def dispatch_attempt(root, attempt_id, capability):
     authorization = _authorization(result, capability)
     if result.state != 'PREPARED':
         raise AttemptError('dispatch boundary already exists; no redispatch')
+    if result.schema_version == 3 and result.contract['retention'] == 'sealed_local':
+        execution_storage.require_protection(root)
     actual = _commitments(root, result.contract['pack_id'])
     if any(result.contract[key] != value for key, value in actual.items()):
         raise AttemptError('execution input commitment changed')
@@ -479,7 +523,7 @@ def dispatch_attempt(root, attempt_id, capability):
     try:
         response = execution_fake.dispatch(result.contract)
         observed_digest = None
-        if result.schema_version == 2:
+        if result.schema_version >= 2:
             scenario = result.contract['options']['scenario']
             if scenario in {'success', 'interrupted_after_response'}:
                 if type(response) is not bytes:
@@ -496,23 +540,26 @@ def dispatch_attempt(root, attempt_id, capability):
             raise AttemptError('fake interruption after observation; delivery unknown')
     except execution_fake.FakeTransportError as exc:
         observation = str(exc)
-        if result.schema_version == 2 and (observation != result.contract['options']['scenario']
+        if result.schema_version >= 2 and (observation != result.contract['options']['scenario']
                                           or observation not in {'after_intent', 'timeout', 'unknown_delivery'}):
             raise AttemptError('unrecognized fake transport result; delivery unknown') from exc
-    if result.schema_version == 2:
+    if result.schema_version >= 2:
         response_digest = observed_digest if observation == 'fake_success' else None
         state = 'RESPONSE_RECORDED' if response_digest is not None else 'UNRESOLVED'
         record = _xinv(result.contract, result.prepared_sha256, intent['checkpoint_sha256'],
-                       authorization, observation, response_digest)
+                       authorization, observation, response_digest, schema_version=result.schema_version)
+        if result.schema_version == 3 and record['sealed_payload'] is not None:
+            execution_storage._publish_payload(root, attempt_id, response, record['sealed_payload'], _boundary)
         outcome = _checkpoint(result.contract, state, intent['checkpoint_sha256'],
-                              {'authorization': authorization, 'xinv': record}, schema_version=2)
+                              {'authorization': authorization, 'xinv': record}, schema_version=result.schema_version)
         prepared = _read_checkpoint(_path(root, attempt_id, SLOTS[0]))
         _verify_xinv(outcome, prepared, intent)
         _publish(root, attempt_id, SLOTS_V2[2], outcome)
     # V1 preserves its published ephemeral-observation / unknown-delivery meaning.
+    final = inspect_attempt(root, attempt_id)
     return {'attempt_id': attempt_id, 'observation': observation,
-            'state': inspect_attempt(root, attempt_id).state,
-            'semantic_evidence': False, 'response_bytes_available': False}
+            'state': final.state, 'semantic_evidence': False,
+            'response_bytes_available': final.response_bytes_available}
 
 
 @_controlled
@@ -524,14 +571,24 @@ def close_test_attempt(root, attempt_id, capability, *, outcome):
     if result.terminal or outcome != required:
         raise AttemptError('invalid test-only terminal disposition')
     slot = SLOTS[1] if result.state == 'PREPARED' else SLOTS[2]
-    if result.schema_version == 2 and result.state == 'DELIVERY_UNKNOWN':
+    if result.schema_version >= 2 and result.state == 'DELIVERY_UNKNOWN':
         slot = SLOTS_V2[2]
         record = _xinv(result.contract, result.prepared_sha256, result.last_sha256,
-                       auth, 'operator_unresolved', None)
+                       auth, 'operator_unresolved', None, schema_version=result.schema_version)
         doc = _checkpoint(result.contract, 'UNRESOLVED', result.last_sha256,
-                          {'authorization': auth, 'xinv': record}, schema_version=2)
+                          {'authorization': auth, 'xinv': record}, schema_version=result.schema_version)
     else:
         doc = _checkpoint(result.contract, 'DISPOSITION', result.last_sha256,
                           {'authorization': auth, 'outcome': outcome}, schema_version=result.schema_version)
     _publish(root, attempt_id, slot, doc)
     return inspect_attempt(root, attempt_id)
+
+
+@_controlled
+def read_response(root, attempt_id):
+    """Return bounded untrusted bytes only after independent provenance and byte checks."""
+    result = inspect_attempt(root, attempt_id)
+    if (result.schema_version != 3 or result.state != 'RESPONSE_RECORDED'
+            or result.payload_status != 'AVAILABLE' or result.sealed_payload is None):
+        raise AttemptError('verified sealed response is not locally available')
+    return execution_storage._read_verified_payload_bytes(root, attempt_id, result.sealed_payload)

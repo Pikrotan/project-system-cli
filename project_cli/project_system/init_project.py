@@ -33,6 +33,6 @@ def init_project(name,path,project_type='other',governance='solo',full_docs=Fals
         p=root/'history'/d; p.mkdir(parents=True,exist_ok=True); (p/'.gitkeep').write_text('',encoding='utf-8')
     (root/'.generated').mkdir(exist_ok=True); (root/'.generated/.gitkeep').write_text('',encoding='utf-8')
     gh=root/'.github'; (gh/'workflows').mkdir(parents=True,exist_ok=True); shutil.copy2(dist/'github_templates/PULL_REQUEST_TEMPLATE.md',gh/'PULL_REQUEST_TEMPLATE.md'); shutil.copy2(dist/'github_templates/CODEOWNERS',gh/'CODEOWNERS'); shutil.copy2(dist/'github_templates/workflows/project-validate.yml',gh/'workflows/project-validate.yml')
-    (root/'.gitignore').write_text('.generated/*\n!.generated/.gitkeep\n.env\n.env.*\n__pycache__/\n.pytest_cache/\n',encoding='utf-8')
-    (root/'.llmignore').write_text('history/**\n.generated/**\nsources/snapshots/**\nintake/extraction-submissions/**\nbuild/**\ndist/**\nnode_modules/**\ncoverage/**\n',encoding='utf-8')
+    (root/'.gitignore').write_text('.generated/*\n!.generated/.gitkeep\n.env\n.env.*\n__pycache__/\n.pytest_cache/\n/.project-local/\n',encoding='utf-8')
+    (root/'.llmignore').write_text('history/**\n.generated/**\nsources/snapshots/**\nintake/extraction-submissions/**\nbuild/**\ndist/**\nnode_modules/**\ncoverage/**\n.project-local/**\n',encoding='utf-8')
     return root

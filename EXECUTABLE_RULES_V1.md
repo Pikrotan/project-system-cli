@@ -2665,6 +2665,111 @@ B1 does not implement response payload storage, replay, XRUN linking, production
 authorization, real models/network, B2/B3 or a new task-completion mechanism.
 Published SRC/CAP/REP/SEG/XCON/XPACK/XRUN/PROP identities remain unchanged.
 
+### Stage 13B2b2-B2: sealed local fake response (candidate)
+
+B2 adds `execution-attempt-v3.schema.json` and test-only profile
+`project-system-execution-attempt-test-v3`. V1/v2 schemas, identities, receipt
+layouts and interpretation are unchanged; no historical attempts are sealed.
+The default remains v1. V3 requires explicit schema_version **and** retention:
+`prepare_attempt(..., schema_version=3, retention='sealed_local')` or explicitly
+`retention='metadata_only'`. Bare schema_version=3 is rejected, preserving the
+published bare-version rejection and making retention authorization explicit.
+All existing type/size/contract/destination constraints remain enforced.
+
+V3 uses `01-prepared.json`, `02-boundary.json`, `03-outcome.json`. Explicit
+predispatch abandonment remains in slot 02. After intent, RESPONSE_RECORDED and
+UNRESOLVED compete for the single immutable slot 03. V3 process-local test
+capabilities use a v3-separated signature bound to the full contract/PREPARED,
+including retention; they are not production authorization or human approval.
+
+#### Embedded XINV v2: historical commitment, not availability
+
+V3 embeds XINV schema_version=2, profile
+`project-system-execution-invocation-test-v2`. Its ID uses the same canonical
+SHA-256/truncated-ID algorithm, with the new schema/profile inside that identity.
+It binds project/attempt, full PREPARED/contract/intent/authorization commitments,
+observed fake result, response SHA-256/count when observed, and declared retention.
+Five false authority claims remain: canonical_authority, semantic_evidence,
+model_authenticity_verified, human_approval_verified, task_completion_claimed.
+
+The new `sealed_payload` is null unless a successful sealed_local response was
+actually published and reread before outcome publication. Otherwise it contains
+exactly `{path, sha256, bytes}`, with path fixed to:
+
+```text
+.project-local/storage/executions/ATTEMPT-<32 lowercase hex>/response.bin
+```
+
+There are no raw bytes, source/instruction text, secrets, arbitrary/absolute paths
+or mutable availability fields in XINV v2. The v1 XINV field
+response_bytes_available is deliberately absent from this new profile. Historical
+sealing remains immutable even if the local payload is subsequently lost.
+Current payload_status/response_bytes_available belong only to read-only inspection
+results, not durable provenance. Metadata-only v3 records no payload commitment
+and creates no payload or local staging files.
+
+#### Publication and protective configuration
+
+Only the existing fixed fake dispatcher can create a response observation. After
+contract/authorization/protection and fresh XPACK validation it claims intent,
+observes the pinned fake bytes, checks their exact digest/count and authorized
+size, then writes complete bytes to an exclusive regular temporary file under
+`.project-local/execution-staging/`. Flush/file-fsync precede atomic hard-link
+publication of response.bin. A bounded stable-file reread independently checks
+size/SHA-256 before publishing the schema/hash-validated unique terminal outcome.
+No replace, copy fallback, existing-file acceptance, overwrite or redispatch is
+allowed, even for an identical existing blob. Unsupported/cross-device hard links
+fail closed. Normal failure removes only that operation's own temporary file;
+crashed staging and published orphans are never automatically collected.
+
+New initialization includes `/.project-local/` in .gitignore and
+`.project-local/**` in .llmignore; the private tree is created lazily. Existing
+projects must explicitly configure these protections; the CLI never repairs user
+configuration. The write gate requires bounded regular no-link ignore files and
+recognized root exclusion lines; later negation rules are conservatively rejected
+as ambiguous, even if a particular negation might be harmless. With Git present,
+bounded read-only Git commands additionally prove repository membership, no
+tracked .project-local paths, and actual exclusion of storage/staging probes.
+Protection is checked at prepare, before intent and again before payload writes.
+These ignore conventions are not permissions, encryption, a secret vault, an OS
+sandbox or a universal guarantee about every AI client's context collection.
+
+#### Independent verification and crash recovery
+
+inspect_attempt first independently verifies immutable provenance, then classifies
+local bytes without rewriting terminal state. Normal project validation consumes
+both classifications through the existing execution layer integration:
+
+| Local result | Validation / permitted use |
+|---|---|
+| AVAILABLE | Exact safely reread bytes; may be returned as untrusted data |
+| MISSING | PAYLOAD_MISSING warning, nonblocking; history preserved, no byte use |
+| CORRUPT | PAYLOAD_CORRUPT error; hash/size/read mismatch, no byte use |
+| UNSAFE | PAYLOAD_UNSAFE error; symlink/reparse/nonregular/unknown path, no use |
+| ORPHAN | PAYLOAD_ORPHAN warning; no valid referencing XINV, never a success |
+| UNRESOLVED | Intent/closure with no referenced response; never retry |
+| NOT_RETAINED | Metadata-only or undispatched/abandoned without local bytes |
+
+The local execution storage inventory also diagnoses unreferenced blobs/directories
+without a valid ATTEMPT and rejects unknown/unsafe entries. It does not reinterpret
+v1/v2 history. Optional absent local storage is valid after Git transfer. Empty
+crashed staging is not response Evidence. A blob present without terminal XINV,
+even with the expected fake digest, remains orphan/non-authoritative. Explicit
+operator UNRESOLVED closure may win despite that blob; bytes are not deleted or
+promoted. Crashes before outcome retain DELIVERY_UNKNOWN and never authorize retry.
+Crashes after outcome retain the original verified terminal provenance.
+
+`read_response` independently revalidates provenance and safely checks bytes again
+before returning bounded **untrusted** data. Missing/corrupt/unsafe/orphan payloads
+cannot be consumed through this API. Stable regular-file reads reuse source_layer
+protection against traversal, symlinks/reparse points and changing file identity.
+
+The published trusted-ancestor/cooperative-writer threat model remains unchanged.
+File fsync is not universal directory-entry durability across power loss. No
+defense against wholesale hostile rewriting/deletion of all metadata is claimed.
+B2 introduces no XRUN link, B3, real provider/network execution, model authenticity,
+human approval, semantic Evidence, task completion or canonical knowledge writes.
+
 ## Normative v1 field contract
 
 This section is normative for the initial JSON schemas and Rule Engine implementation.
